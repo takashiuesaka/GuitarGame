@@ -5,8 +5,12 @@ import {
   CHORD_QUALITIES,
   chordName,
   getVoicing,
+  isPlayableShape,
   isVoicingAvailable,
+  MAX_FINGERS,
+  MAX_STRING_SKIP,
   qualitiesFor,
+  requiredFingers,
   samePositionSet,
   stringSets,
   voicingStringGroups,
@@ -76,34 +80,51 @@ describe("[S-CHORD-02] ボイシング定義", () => {
     expect(VOICINGS.map((v) => v.id)).toEqual(["triad", "seventh", "guide"]);
   });
 
-  it("使う弦は隣り合う弦グループ（ガイドトーンのみ1本飛ばし）", () => {
-    expect(voicingStringGroups("triad")).toEqual([
-      [6, 5, 4],
-      [5, 4, 3],
-      [4, 3, 2],
-      [3, 2, 1],
-    ]);
-    expect(voicingStringGroups("seventh")).toEqual([
-      [6, 5, 4, 3],
-      [5, 4, 3, 2],
-      [4, 3, 2, 1],
-    ]);
-    expect(voicingStringGroups("guide")).toEqual([
-      [6, 4, 3],
-      [5, 3, 2],
-      [4, 2, 1],
-    ]);
+  it("弦は最大1本まで飛ばせる（隣り合う弦だけに限定しない）", () => {
+    for (const v of ["triad", "seventh", "guide"] as const) {
+      const groups = voicingStringGroups(v);
+      const count = getVoicing(v).noteCount;
+      for (const g of groups) {
+        expect(g.length, JSON.stringify(g)).toBe(count);
+        // 低音弦→高音弦の順で、飛ばせるのは1本まで
+        for (let i = 1; i < g.length; i++) {
+          expect(g[i - 1] - g[i], JSON.stringify(g)).toBeGreaterThanOrEqual(1);
+          expect(g[i - 1] - g[i], JSON.stringify(g)).toBeLessThanOrEqual(1 + MAX_STRING_SKIP);
+        }
+      }
+      // 重複がない
+      expect(new Set(groups.map((g) => g.join())).size).toBe(groups.length);
+    }
+  });
+
+  it("隣り合う弦グループも弦を飛ばしたグループも含む", () => {
+    const triad = voicingStringGroups("triad").map((g) => g.join());
+    expect(triad).toContain("6,5,4");
+    expect(triad).toContain("3,2,1");
+    expect(triad).toContain("6,4,3");
+    expect(triad).toContain("6,5,3");
+    expect(triad).not.toContain("6,3,2"); // 弦を2本飛ばすので不可
+
+    const seventh = voicingStringGroups("seventh").map((g) => g.join());
+    expect(seventh).toContain("6,5,4,3");
+    expect(seventh).toContain("6,5,3,1");
+
+    // ガイドトーンも隣り合う弦で押さえられる
+    expect(voicingStringGroups("guide").map((g) => g.join())).toContain("6,5,4");
   });
 
   it("ルート弦を含む弦グループは、ルートが最低音になるものが先頭", () => {
-    expect(stringSets("triad", 6)).toEqual([[6, 5, 4]]);
-    expect(stringSets("triad", 5)).toEqual([
-      [5, 4, 3],
-      [6, 5, 4],
-    ]);
-    expect(stringSets("triad", 1)).toEqual([[3, 2, 1]]);
-    expect(stringSets("guide", 6)).toEqual([[6, 4, 3]]);
-    expect(stringSets("guide", 1)).toEqual([[4, 2, 1]]);
+    for (const v of ["triad", "seventh", "guide"] as const) {
+      for (let root = 1; root <= 6; root++) {
+        const sets = stringSets(v, root);
+        expect(sets.length, `${v}/${root}弦`).toBeGreaterThan(0);
+        expect(sets.every((g) => g.includes(root))).toBe(true);
+        const indexes = sets.map((g) => g.indexOf(root));
+        expect(indexes).toEqual([...indexes].sort((x, y) => x - y));
+      }
+    }
+    expect(stringSets("triad", 6)[0]).toEqual([6, 5, 4]);
+    expect(stringSets("triad", 1)[0]).toEqual([3, 2, 1]);
   });
 
   it("音数はボイシング定義と一致する", () => {
@@ -138,6 +159,64 @@ describe("[S-CHORD-04] ルート弦の可否", () => {
     for (const v of VOICINGS) {
       for (let s = 1; s <= 6; s++) {
         expect(isVoicingAvailable(v.id, s), `${v.id}/${s}弦`).toBe(true);
+      }
+    }
+  });
+});
+
+describe("[S-CHORD-09] 押弦できるシェイプかの判定", () => {
+  const pos = (list: number[][]) => list.map(([string, fret]) => ({ string, fret }));
+
+  it("開放弦だけなら指は 0 本", () => {
+    expect(requiredFingers(pos([[6, 0], [5, 0], [4, 0]]))).toBe(0);
+  });
+
+  it("同じフレットの複数音は最低フレットならセーハで 1 本", () => {
+    // F メジャーの一部: 1フレットのセーハ
+    expect(requiredFingers(pos([[6, 1], [2, 1], [1, 1]]))).toBe(1);
+    // セーハ + 別の指
+    expect(requiredFingers(pos([[6, 1], [5, 3], [1, 1]]))).toBe(2);
+  });
+
+  it("セーハの内側に低いフレットや開放弦があるとセーハできない", () => {
+    // 5弦3f と 1弦3f のあいだの 3弦が開放 → セーハ不可なので 2 本
+    expect(requiredFingers(pos([[5, 3], [3, 0], [1, 3]]))).toBe(2);
+    // あいだが 3f 以上ならセーハできる
+    expect(requiredFingers(pos([[5, 3], [3, 4], [1, 3]]))).toBe(2);
+  });
+
+  it("最低フレット以外の同フレットは指を別々に数える", () => {
+    expect(requiredFingers(pos([[6, 5], [5, 8], [4, 8]]))).toBe(3);
+  });
+
+  it("押弦幅が広すぎるシェイプは押さえられない", () => {
+    // ローポジションは 3 フレット差まで
+    expect(requiredFingers(pos([[6, 1], [5, 4]]))).toBe(2);
+    expect(requiredFingers(pos([[6, 1], [5, 5]]))).toBeNull();
+    // 5フレット以降は 4 フレット差まで
+    expect(requiredFingers(pos([[6, 5], [5, 9]]))).toBe(2);
+    expect(requiredFingers(pos([[6, 5], [5, 10]]))).toBeNull();
+  });
+
+  it("指が5本必要なシェイプは押さえられない", () => {
+    expect(requiredFingers(pos([[6, 5], [5, 6], [4, 7], [3, 8], [2, 6]]))).toBe(5);
+    expect(isPlayableShape(pos([[6, 5], [5, 6], [4, 7], [3, 8], [2, 6]]))).toBe(false);
+    expect(isPlayableShape(pos([[6, 5], [5, 6], [4, 7], [3, 8]]))).toBe(true);
+  });
+
+  it("生成されるシェイプはすべて押弦できる", () => {
+    for (const v of VOICINGS) {
+      for (const q of qualitiesFor(v.id)) {
+        for (let string = 1; string <= 6; string++) {
+          for (let fret = 0; fret <= 12; fret++) {
+            for (const shape of buildChordShapes(tuning, v.id, q, { string, fret })) {
+              const label = `${q.id}/${v.id}/${string}弦${fret}f`;
+              expect(isPlayableShape(shape.positions), label).toBe(true);
+              expect(shape.fingers, label).toBeLessThanOrEqual(MAX_FINGERS);
+              expect(shape.fingers, label).toBe(requiredFingers(shape.positions));
+            }
+          }
+        }
       }
     }
   });
@@ -245,22 +324,29 @@ describe("[S-CHORD-05] シェイプ生成", () => {
     expect(shape.rootIndex).toBe(0);
   });
 
-  it("定番シェイプを正しく生成する", () => {
+  it("定番シェイプが正解候補に含まれる", () => {
+    const has = (shapes: { positions: { string: number; fret: number }[] }[], want: number[][]) =>
+      shapes.some((s) =>
+        samePositionSet(
+          s.positions,
+          want.map(([string, fret]) => ({ string, fret })),
+        ),
+      );
+
     const dom7 = CHORD_QUALITIES.find((q) => q.id === "dom7")!;
-    const guide = buildChordShape(tuning, "guide", dom7, { string: 6, fret: 5 })!;
-    expect(guide.positions).toEqual([
-      { string: 6, fret: 5 },
-      { string: 4, fret: 5 },
-      { string: 3, fret: 6 },
-    ]);
+    const guide = buildChordShapes(tuning, "guide", dom7, { string: 6, fret: 5 });
+    // A7 のシェルボイシング
+    expect(has(guide, [[6, 5], [4, 5], [3, 6]])).toBe(true);
 
     const major = CHORD_QUALITIES.find((q) => q.id === "major")!;
-    const triad = buildChordShape(tuning, "triad", major, { string: 5, fret: 5 })!;
-    expect(triad.positions).toEqual([
-      { string: 5, fret: 5 },
-      { string: 4, fret: 4 },
-      { string: 3, fret: 2 },
-    ]);
+    const triad = buildChordShapes(tuning, "triad", major, { string: 5, fret: 5 });
+    // D メジャーのクローズドトライアド
+    expect(has(triad, [[5, 5], [4, 4], [3, 2]])).toBe(true);
+
+    const maj7 = CHORD_QUALITIES.find((q) => q.id === "maj7")!;
+    const cmaj7 = buildChordShapes(tuning, "seventh", maj7, { string: 5, fret: 3 });
+    // 定番の Cmaj7（5弦ルート・ドロップ2）
+    expect(has(cmaj7, [[5, 3], [4, 5], [3, 4], [2, 5]])).toBe(true);
   });
 
   it("各ボイシング×コード×ルート弦で、0〜17フレットのどこかに必ずシェイプがある", () => {

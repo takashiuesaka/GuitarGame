@@ -81,36 +81,48 @@ export function qualitiesFor(voicing: VoicingType): ChordQuality[] {
   return CHORD_QUALITIES.filter((q) => q.category === category);
 }
 
+/** 隣り合って鳴らす弦のあいだに飛ばせる弦の本数の上限 */
+export const MAX_STRING_SKIP = 1;
+
 /**
- * ボイシングごとに使える弦グループ（低音弦→高音弦の順）をすべて返す。
- * ガイドトーンは 1 本飛ばしたシェルボイシングの配置にする。
+ * ボイシングで使える弦の組み合わせ（低音弦→高音弦の順）をすべて返す。
+ * 隣同士の弦だけでなく、弦を飛ばした組み合わせも含む
+ * （飛ばせるのは連続 MAX_STRING_SKIP 本まで）。
  */
 export function voicingStringGroups(voicing: VoicingType): number[][] {
-  const groups: number[][] = [];
-
-  if (voicing === "guide") {
-    for (let s = STRING_COUNT; s >= 1; s--) {
-      const group = [s, s - 2, s - 3];
-      if (group.every((x) => x >= 1 && x <= STRING_COUNT)) groups.push(group);
-    }
-    return groups;
-  }
-
   const count = getVoicing(voicing).noteCount;
-  for (let s = STRING_COUNT; s >= count; s--) {
-    groups.push(Array.from({ length: count }, (_, i) => s - i));
-  }
+  const groups: number[][] = [];
+  const current: number[] = [];
+
+  const walk = (next: number): void => {
+    if (current.length === count) {
+      groups.push(current.slice());
+      return;
+    }
+    for (let s = next; s >= count - current.length; s--) {
+      const prev = current[current.length - 1];
+      if (prev !== undefined && prev - s > MAX_STRING_SKIP + 1) break;
+      current.push(s);
+      walk(s - 1);
+      current.pop();
+    }
+  };
+
+  walk(STRING_COUNT);
   return groups;
 }
 
 /**
- * そのルート弦を含む弦グループ。ルートが最低音になるものを先頭に並べる
- * （後ろに来るものはルートより低い音を含む展開形）。
+ * そのルート弦を含む弦の組み合わせ。ルートが最低音になるものを先頭に、
+ * 弦の広がりが狭いものを優先して並べる。
  */
 export function stringSets(voicing: VoicingType, rootString: number): number[][] {
+  const spread = (g: number[]): number => g[0] - g[g.length - 1];
   return voicingStringGroups(voicing)
     .filter((g) => g.includes(rootString))
-    .sort((a, b) => a.indexOf(rootString) - b.indexOf(rootString));
+    .sort(
+      (a, b) => a.indexOf(rootString) - b.indexOf(rootString) || spread(a) - spread(b),
+    );
 }
 
 /** そのルート弦でボイシングが成立するか（弦が足りるか） */
@@ -138,15 +150,69 @@ export interface ChordShape {
   intervals: number[];
   /** positions の中でルートが何番目か。0 ならルートが最低音 */
   rootIndex: number;
+  /** 押さえるのに必要な指の本数（開放弦は 0 本、セーハは 1 本） */
+  fingers: number;
 }
 
-/** 押弦幅の上限（フレット数） */
-const MAX_SPAN = 5;
+/** 押弦幅（最低フレットとの差）の上限 */
+const MAX_SPAN = 4;
+/** ローポジション（このフレット未満から始まる）はフレット間隔が広いので幅を狭める */
+const LOW_POSITION_FRET = 5;
+const MAX_SPAN_LOW = 3;
 /** 隣り合う構成音の音程の上限（半音）。クローズボイシングを保つ */
 const MAX_GAP = 12;
+/** 押弦に使える指の本数（親指は数えない） */
+export const MAX_FINGERS = 4;
 
 const mod12 = (n: number): number => ((n % 12) + 12) % 12;
 const posKey = (p: Position): string => `${p.string}-${p.fret}`;
+
+/**
+ * 同じフレットの複数音を人差し指のセーハで押さえられるか。
+ * セーハする弦の範囲の内側に、それより低いフレット（開放弦を含む）があると押さえられない。
+ */
+function canBarre(group: Position[], all: Position[]): boolean {
+  const fret = group[0].fret;
+  const lo = Math.min(...group.map((p) => p.string));
+  const hi = Math.max(...group.map((p) => p.string));
+  return !all.some((p) => p.string > lo && p.string < hi && p.fret < fret);
+}
+
+/**
+ * そのシェイプを押さえるのに必要な指の本数。
+ * 物理的に押さえられない（押弦幅が広すぎる）場合は null を返す。
+ * 開放弦は指を使わず、最低フレットの同フレット複数音はセーハで 1 本と数える。
+ */
+export function requiredFingers(positions: Position[]): number | null {
+  const fretted = positions.filter((p) => p.fret > 0);
+  if (fretted.length === 0) return 0;
+
+  const frets = fretted.map((p) => p.fret);
+  const minFret = Math.min(...frets);
+  const limit = minFret < LOW_POSITION_FRET ? MAX_SPAN_LOW : MAX_SPAN;
+  if (Math.max(...frets) - minFret > limit) return null;
+
+  const byFret = new Map<number, Position[]>();
+  for (const p of fretted) {
+    const list = byFret.get(p.fret);
+    if (list) list.push(p);
+    else byFret.set(p.fret, [p]);
+  }
+
+  let fingers = 0;
+  for (const [fret, group] of byFret) {
+    if (group.length === 1) fingers += 1;
+    else if (fret === minFret && canBarre(group, positions)) fingers += 1;
+    else fingers += group.length;
+  }
+  return fingers;
+}
+
+/** 人間が押さえられるシェイプか */
+export function isPlayableShape(positions: Position[]): boolean {
+  const fingers = requiredFingers(positions);
+  return fingers !== null && fingers <= MAX_FINGERS;
+}
 
 /**
  * ルート位置を含むコードシェイプをすべて生成する。
@@ -197,6 +263,8 @@ export function buildChordShapes(
     const dfs = (index: number, prevMidi: number | null): void => {
       if (index === strings.length) {
         const positions = chosen.slice();
+        const fingers = requiredFingers(positions);
+        if (fingers === null || fingers > MAX_FINGERS) return;
         const key = positions.map(posKey).join("|");
         if (seen.has(key)) return;
         seen.add(key);
@@ -208,6 +276,7 @@ export function buildChordShapes(
           positions,
           intervals: positions.map((p) => midiAt(tuning, p) - rootMidi),
           rootIndex,
+          fingers,
         });
         return;
       }
@@ -242,10 +311,14 @@ export function buildChordShapes(
     const f = s.positions.filter((p) => p.fret > 0).map((p) => p.fret);
     return f.length === 0 ? 0 : Math.max(...f) - Math.min(...f);
   };
+  const stringSpread = (s: ChordShape): number =>
+    s.positions[0].string - s.positions[s.positions.length - 1].string;
 
   return shapes.sort(
     (a, b) =>
       a.rootIndex - b.rootIndex ||
+      a.fingers - b.fingers ||
+      stringSpread(a) - stringSpread(b) ||
       span(a) - span(b) ||
       Math.max(...a.positions.map((p) => p.fret)) - Math.max(...b.positions.map((p) => p.fret)),
   );

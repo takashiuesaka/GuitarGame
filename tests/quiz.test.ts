@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { CHORD_QUALITIES, qualitiesFor, type VoicingType } from "../src/core/chords";
+import {
+  CHORD_QUALITIES,
+  isPlayableShape,
+  qualitiesFor,
+  type VoicingType,
+} from "../src/core/chords";
 import { pitchClassAt, type Position } from "../src/core/fretboard";
 import { getTuning } from "../src/core/tuning";
 import { ChordQuiz } from "../src/ui/ChordQuiz";
@@ -332,6 +337,44 @@ describe("[S-CHORD-07] コードシェイプクイズの判定", () => {
       }
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("弦を飛ばしたシェイプでも正解になる", () => {
+    const spy = vi.spyOn(Math, "random").mockReturnValue(0.3);
+    try {
+      const make = () =>
+        new ChordQuiz(tuning, {
+          voicing: "triad",
+          qualityIds: ["major"],
+          rootStrings: [5],
+          showRoot: true,
+        });
+      const skipped = make().state.shapes.filter((shape) =>
+        shape.positions.some((p, i) => i > 0 && shape.positions[i - 1].string - p.string > 1),
+      );
+      expect(skipped.length).toBeGreaterThan(0);
+
+      for (const shape of skipped) {
+        const quiz = make();
+        answerCurrent(quiz, shape);
+        const label = shape.positions.map((p) => `${p.string}-${p.fret}`).join();
+        expect(quiz.judge().correct, label).toBe(true);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("押弦できないシェイプは正解候補に含まれない", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "seventh",
+      qualityIds: ["maj7", "dom7", "min7"],
+      rootStrings: [6, 5, 4, 3, 2, 1],
+      showRoot: true,
+    });
+    for (const shape of quiz.state.shapes) {
+      expect(isPlayableShape(shape.positions)).toBe(true);
     }
   });
 
