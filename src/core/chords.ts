@@ -82,31 +82,47 @@ export function qualitiesFor(voicing: VoicingType): ChordQuality[] {
 }
 
 /**
- * ボイシングごとに使用する弦の並び（ルート弦から高音弦へ）。
+ * ボイシングごとに使える弦グループ（低音弦→高音弦の順）をすべて返す。
  * ガイドトーンは 1 本飛ばしたシェルボイシングの配置にする。
  */
-export function stringPlan(voicing: VoicingType, rootString: number): number[] | null {
-  const plan =
-    voicing === "guide"
-      ? [rootString, rootString - 2, rootString - 3]
-      : voicing === "seventh"
-        ? [rootString, rootString - 1, rootString - 2, rootString - 3]
-        : [rootString, rootString - 1, rootString - 2];
+export function voicingStringGroups(voicing: VoicingType): number[][] {
+  const groups: number[][] = [];
 
-  if (plan.some((s) => s < 1 || s > STRING_COUNT)) return null;
-  return plan;
+  if (voicing === "guide") {
+    for (let s = STRING_COUNT; s >= 1; s--) {
+      const group = [s, s - 2, s - 3];
+      if (group.every((x) => x >= 1 && x <= STRING_COUNT)) groups.push(group);
+    }
+    return groups;
+  }
+
+  const count = getVoicing(voicing).noteCount;
+  for (let s = STRING_COUNT; s >= count; s--) {
+    groups.push(Array.from({ length: count }, (_, i) => s - i));
+  }
+  return groups;
+}
+
+/**
+ * そのルート弦を含む弦グループ。ルートが最低音になるものを先頭に並べる
+ * （後ろに来るものはルートより低い音を含む展開形）。
+ */
+export function stringSets(voicing: VoicingType, rootString: number): number[][] {
+  return voicingStringGroups(voicing)
+    .filter((g) => g.includes(rootString))
+    .sort((a, b) => a.indexOf(rootString) - b.indexOf(rootString));
 }
 
 /** そのルート弦でボイシングが成立するか（弦が足りるか） */
 export function isVoicingAvailable(voicing: VoicingType, rootString: number): boolean {
-  return stringPlan(voicing, rootString) !== null;
+  return stringSets(voicing, rootString).length > 0;
 }
 
-/** 弦の並びに対応する、ルートからの度数の並び */
-export function tonePlan(voicing: VoicingType, quality: ChordQuality): number[] {
+/** ボイシングで押さえる構成音（ルートからの半音距離） */
+export function voicingTones(voicing: VoicingType, quality: ChordQuality): number[] {
   if (voicing === "guide") {
-    // ルート → 7th → 3rd の順に低音側から積む
-    return [0, quality.intervals[3], quality.intervals[1]];
+    // 5度を省いた R・3rd・7th
+    return [0, quality.intervals[1], quality.intervals[3]];
   }
   return quality.intervals;
 }
@@ -118,8 +134,10 @@ export interface ChordShape {
   rootPitchClass: PitchClass;
   /** 低音弦から高音弦の順に並んだ押弦位置 */
   positions: Position[];
-  /** positions と同じ並びの、ルートからの度数 */
+  /** positions と同じ並びの、ルートからの音程（展開形では負になる） */
   intervals: number[];
+  /** positions の中でルートが何番目か。0 ならルートが最低音 */
+  rootIndex: number;
 }
 
 /** 押弦幅の上限（フレット数） */
@@ -127,9 +145,115 @@ const MAX_SPAN = 5;
 /** 隣り合う構成音の音程の上限（半音）。クローズボイシングを保つ */
 const MAX_GAP = 12;
 
+const mod12 = (n: number): number => ((n % 12) + 12) % 12;
+const posKey = (p: Position): string => `${p.string}-${p.fret}`;
+
 /**
- * ルート位置からクローズボイシングのコードシェイプを生成する。
- * 各弦に1音ずつ、音高が低音弦から高音弦へ昇順になるよう配置する。
+ * ルート位置を含むコードシェイプをすべて生成する。
+ * 各弦に構成音を1音ずつ、音高が低音弦から高音弦へ昇順になるよう配置する。
+ * ルートが最低音でないもの（展開形）も含まれる。
+ */
+export function buildChordShapes(
+  tuning: Tuning,
+  voicing: VoicingType,
+  quality: ChordQuality,
+  root: Position,
+): ChordShape[] {
+  const tones = voicingTones(voicing, quality);
+  if (tones.some((t) => !Number.isFinite(t))) return [];
+
+  const rootMidi = midiAt(tuning, root);
+  const shapes: ChordShape[] = [];
+  const seen = new Set<string>();
+
+  // 押弦幅の制約から、探索するフレットはルート周辺に限定できる。
+  // 開放弦ルートは押弦幅の計算に含まれないため、音程差の上限まで広げる。
+  const lowFret = Math.max(0, root.fret - MAX_SPAN);
+  const highFret =
+    root.fret === 0 ? Math.min(MAX_FRET, MAX_GAP) : Math.min(MAX_FRET, root.fret + MAX_SPAN);
+
+  for (const strings of stringSets(voicing, root.string)) {
+    const rootIndex = strings.indexOf(root.string);
+    if (tones.length !== strings.length) continue;
+
+    const used = new Array<boolean>(tones.length).fill(false);
+    const chosen: Position[] = [];
+
+    const spanOk = (): boolean => {
+      const f = chosen.filter((p) => p.fret > 0).map((p) => p.fret);
+      return f.length === 0 || Math.max(...f) - Math.min(...f) <= MAX_SPAN;
+    };
+
+    const place = (index: number, pos: Position, toneIndex: number, prevMidi: number | null) => {
+      const midi = midiAt(tuning, pos);
+      if (prevMidi !== null && (midi <= prevMidi || midi - prevMidi > MAX_GAP)) return;
+      used[toneIndex] = true;
+      chosen.push(pos);
+      if (spanOk()) dfs(index + 1, midi);
+      chosen.pop();
+      used[toneIndex] = false;
+    };
+
+    const dfs = (index: number, prevMidi: number | null): void => {
+      if (index === strings.length) {
+        const positions = chosen.slice();
+        const key = positions.map(posKey).join("|");
+        if (seen.has(key)) return;
+        seen.add(key);
+        shapes.push({
+          quality,
+          voicing,
+          root,
+          rootPitchClass: mod12(rootMidi) as PitchClass,
+          positions,
+          intervals: positions.map((p) => midiAt(tuning, p) - rootMidi),
+          rootIndex,
+        });
+        return;
+      }
+
+      if (index === rootIndex) {
+        const toneIndex = tones.indexOf(0);
+        if (toneIndex < 0 || used[toneIndex]) return;
+        place(index, root, toneIndex, prevMidi);
+        return;
+      }
+
+      for (let t = 0; t < tones.length; t++) {
+        if (used[t]) continue;
+        const target = mod12(tones[t]);
+        for (let fret = lowFret; fret <= highFret; fret++) {
+          const pos = { string: strings[index], fret };
+          if (mod12(midiAt(tuning, pos) - rootMidi) !== target) continue;
+          place(index, pos, t, prevMidi);
+        }
+        // 開放弦も候補に含める
+        if (lowFret > 0) {
+          const open = { string: strings[index], fret: 0 };
+          if (mod12(midiAt(tuning, open) - rootMidi) === target) place(index, open, t, prevMidi);
+        }
+      }
+    };
+
+    dfs(0, null);
+  }
+
+  const span = (s: ChordShape): number => {
+    const f = s.positions.filter((p) => p.fret > 0).map((p) => p.fret);
+    return f.length === 0 ? 0 : Math.max(...f) - Math.min(...f);
+  };
+
+  return shapes.sort(
+    (a, b) =>
+      a.rootIndex - b.rootIndex ||
+      span(a) - span(b) ||
+      Math.max(...a.positions.map((p) => p.fret)) - Math.max(...b.positions.map((p) => p.fret)),
+  );
+}
+
+/**
+ * ルート位置から代表的なコードシェイプを 1 つ生成する。
+ * ルートが最低音になるもの、押弦幅の狭いものを優先する。
  */
 export function buildChordShape(
   tuning: Tuning,
@@ -137,56 +261,9 @@ export function buildChordShape(
   quality: ChordQuality,
   root: Position,
 ): ChordShape | null {
-  const strings = stringPlan(voicing, root.string);
-  if (!strings) return null;
-
-  const tones = tonePlan(voicing, quality);
-  if (tones.length !== strings.length) return null;
-
-  const rootMidi = midiAt(tuning, root);
-  const positions: Position[] = [root];
-  const intervals: number[] = [0];
-  let previousMidi = rootMidi;
-
-  for (let i = 1; i < strings.length; i++) {
-    const stringNo = strings[i];
-    const target = ((tones[i] % 12) + 12) % 12;
-    let found: Position | null = null;
-
-    for (let fret = 0; fret <= MAX_FRET; fret++) {
-      const pos = { string: stringNo, fret };
-      const midi = midiAt(tuning, pos);
-      if (midi <= previousMidi) continue;
-      if (((midi - rootMidi) % 12 + 12) % 12 !== target) continue;
-      found = pos;
-      break;
-    }
-
-    if (!found) return null;
-    const foundMidi = midiAt(tuning, found);
-    if (foundMidi - previousMidi > MAX_GAP) return null;
-    positions.push(found);
-    intervals.push(foundMidi - rootMidi);
-    previousMidi = foundMidi;
-  }
-
-  // 押さえられる幅に収まっているか確認する
-  const frets = positions.map((p) => p.fret);
-  const fretted = frets.filter((f) => f > 0);
-  if (fretted.length > 0) {
-    const span = Math.max(...fretted) - Math.min(...fretted);
-    if (span > MAX_SPAN) return null;
-  }
-
-  return {
-    quality,
-    voicing,
-    root,
-    rootPitchClass: ((rootMidi % 12) + 12) % 12,
-    positions,
-    intervals,
-  };
+  return buildChordShapes(tuning, voicing, quality, root)[0] ?? null;
 }
+
 
 /** コードネームを組み立てる (例: "C", "Am7", "G♭maj7") */
 export function chordName(rootName: string, quality: ChordQuality): string {
@@ -195,7 +272,6 @@ export function chordName(rootName: string, quality: ChordQuality): string {
 
 export function samePositionSet(a: Position[], b: Position[]): boolean {
   if (a.length !== b.length) return false;
-  const key = (p: Position) => `${p.string}-${p.fret}`;
-  const setB = new Set(b.map(key));
-  return a.every((p) => setB.has(key(p)));
+  const setB = new Set(b.map(posKey));
+  return a.every((p) => setB.has(posKey(p)));
 }

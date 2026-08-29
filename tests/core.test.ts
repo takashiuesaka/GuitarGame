@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   buildChordShape,
+  buildChordShapes,
   CHORD_QUALITIES,
   chordName,
   getVoicing,
   isVoicingAvailable,
   qualitiesFor,
   samePositionSet,
-  stringPlan,
+  stringSets,
+  voicingStringGroups,
   VOICINGS,
-  type VoicingType,
 } from "../src/core/chords";
 import { DEGREE_GROUPS, degreeLabel, getDegree } from "../src/core/degrees";
 import { midiAt, pitchClassAt, MAX_FRET } from "../src/core/fretboard";
@@ -75,10 +76,34 @@ describe("[S-CHORD-02] ボイシング定義", () => {
     expect(VOICINGS.map((v) => v.id)).toEqual(["triad", "seventh", "guide"]);
   });
 
-  it("使う弦はルート弦から下記の並び", () => {
-    expect(stringPlan("triad", 6)).toEqual([6, 5, 4]);
-    expect(stringPlan("seventh", 6)).toEqual([6, 5, 4, 3]);
-    expect(stringPlan("guide", 6)).toEqual([6, 4, 3]);
+  it("使う弦は隣り合う弦グループ（ガイドトーンのみ1本飛ばし）", () => {
+    expect(voicingStringGroups("triad")).toEqual([
+      [6, 5, 4],
+      [5, 4, 3],
+      [4, 3, 2],
+      [3, 2, 1],
+    ]);
+    expect(voicingStringGroups("seventh")).toEqual([
+      [6, 5, 4, 3],
+      [5, 4, 3, 2],
+      [4, 3, 2, 1],
+    ]);
+    expect(voicingStringGroups("guide")).toEqual([
+      [6, 4, 3],
+      [5, 3, 2],
+      [4, 2, 1],
+    ]);
+  });
+
+  it("ルート弦を含む弦グループは、ルートが最低音になるものが先頭", () => {
+    expect(stringSets("triad", 6)).toEqual([[6, 5, 4]]);
+    expect(stringSets("triad", 5)).toEqual([
+      [5, 4, 3],
+      [6, 5, 4],
+    ]);
+    expect(stringSets("triad", 1)).toEqual([[3, 2, 1]]);
+    expect(stringSets("guide", 6)).toEqual([[6, 4, 3]]);
+    expect(stringSets("guide", 1)).toEqual([[4, 2, 1]]);
   });
 
   it("音数はボイシング定義と一致する", () => {
@@ -109,30 +134,25 @@ describe("[S-CHORD-03] コードの種類", () => {
 });
 
 describe("[S-CHORD-04] ルート弦の可否", () => {
-  it("triad は6〜3弦すべて使える", () => {
-    for (const s of [6, 5, 4, 3]) expect(isVoicingAvailable("triad", s)).toBe(true);
-  });
-
-  it("seventh と guide は3弦ルートを使えない", () => {
-    for (const v of ["seventh", "guide"] as VoicingType[]) {
-      expect(isVoicingAvailable(v, 6)).toBe(true);
-      expect(isVoicingAvailable(v, 5)).toBe(true);
-      expect(isVoicingAvailable(v, 4)).toBe(true);
-      expect(isVoicingAvailable(v, 3)).toBe(false);
+  it("すべてのボイシングで1〜6弦すべてをルートにできる", () => {
+    for (const v of VOICINGS) {
+      for (let s = 1; s <= 6; s++) {
+        expect(isVoicingAvailable(v.id, s), `${v.id}/${s}弦`).toBe(true);
+      }
     }
   });
 });
 
 describe("[S-CHORD-05] シェイプ生成", () => {
+  const ROOT_STRINGS = [6, 5, 4, 3, 2, 1];
+
   const allShapes = () => {
     const shapes = [];
     for (const v of VOICINGS) {
       for (const q of qualitiesFor(v.id)) {
-        for (const s of [6, 5, 4, 3]) {
-          if (!isVoicingAvailable(v.id, s)) continue;
-          for (let f = 0; f <= 12; f++) {
-            const shape = buildChordShape(tuning, v.id, q, { string: s, fret: f });
-            if (shape) shapes.push(shape);
+        for (const s of ROOT_STRINGS) {
+          for (let f = 0; f <= 17; f++) {
+            shapes.push(...buildChordShapes(tuning, v.id, q, { string: s, fret: f }));
           }
         }
       }
@@ -142,9 +162,10 @@ describe("[S-CHORD-05] シェイプ生成", () => {
 
   it("生成されたシェイプは音数・弦の並び・度数がボイシング定義と一致する", () => {
     for (const shape of allShapes()) {
-      const plan = stringPlan(shape.voicing, shape.root.string)!;
+      const groups = stringSets(shape.voicing, shape.root.string);
       expect(shape.positions).toHaveLength(getVoicing(shape.voicing).noteCount);
-      expect(shape.positions.map((p) => p.string)).toEqual(plan);
+      const strings = shape.positions.map((p) => p.string);
+      expect(groups).toContainEqual(strings);
       const pcs = shape.intervals.map((i) => ((i % 12) + 12) % 12).sort((a, b) => a - b);
       const expected = [...shape.quality.intervals].sort((a, b) => a - b);
       const wanted =
@@ -152,6 +173,12 @@ describe("[S-CHORD-05] シェイプ生成", () => {
           ? expected.filter((i) => i !== shape.quality.intervals[2])
           : expected;
       expect(pcs).toEqual([...wanted].sort((a, b) => a - b));
+    }
+  });
+
+  it("ルートは positions のうち rootIndex 番目にある", () => {
+    for (const shape of allShapes()) {
+      expect(shape.positions[shape.rootIndex]).toEqual(shape.root);
     }
   });
 
@@ -183,6 +210,41 @@ describe("[S-CHORD-05] シェイプ生成", () => {
     }
   });
 
+  it("同じ位置集合のシェイプは重複しない", () => {
+    for (const v of VOICINGS) {
+      for (const q of qualitiesFor(v.id)) {
+        for (const s of ROOT_STRINGS) {
+          for (let f = 0; f <= 12; f++) {
+            const shapes = buildChordShapes(tuning, v.id, q, { string: s, fret: f });
+            const keys = shapes.map((sh) =>
+              sh.positions.map((p) => `${p.string}-${p.fret}`).join("|"),
+            );
+            expect(new Set(keys).size).toBe(keys.length);
+          }
+        }
+      }
+    }
+  });
+
+  it("展開形（ルートが最低音でないシェイプ）も生成される", () => {
+    const major = CHORD_QUALITIES.find((q) => q.id === "major")!;
+    // 1弦ルートは必ず展開形になる（1弦より高い弦がない）
+    const shapes = buildChordShapes(tuning, "triad", major, { string: 1, fret: 8 });
+    expect(shapes.length).toBeGreaterThan(0);
+    for (const s of shapes) expect(s.rootIndex).toBe(2);
+
+    // 5弦ルートはルートが最低音のものと、6弦を含む展開形の両方がある
+    const fifth = buildChordShapes(tuning, "triad", major, { string: 5, fret: 3 });
+    expect(fifth.some((s) => s.rootIndex === 0)).toBe(true);
+    expect(fifth.some((s) => s.rootIndex > 0)).toBe(true);
+  });
+
+  it("buildChordShape はルートが最低音のシェイプを優先して返す", () => {
+    const major = CHORD_QUALITIES.find((q) => q.id === "major")!;
+    const shape = buildChordShape(tuning, "triad", major, { string: 5, fret: 3 })!;
+    expect(shape.rootIndex).toBe(0);
+  });
+
   it("定番シェイプを正しく生成する", () => {
     const dom7 = CHORD_QUALITIES.find((q) => q.id === "dom7")!;
     const guide = buildChordShape(tuning, "guide", dom7, { string: 6, fret: 5 })!;
@@ -201,12 +263,11 @@ describe("[S-CHORD-05] シェイプ生成", () => {
     ]);
   });
 
-  it("各ボイシング×コード×ルート弦で、0〜12フレットのどこかに必ずシェイプがある", () => {
+  it("各ボイシング×コード×ルート弦で、0〜17フレットのどこかに必ずシェイプがある", () => {
     for (const v of VOICINGS) {
       for (const q of qualitiesFor(v.id)) {
-        for (const s of [6, 5, 4, 3]) {
-          if (!isVoicingAvailable(v.id, s)) continue;
-          const found = Array.from({ length: 13 }, (_, f) =>
+        for (const s of ROOT_STRINGS) {
+          const found = Array.from({ length: 18 }, (_, f) =>
             buildChordShape(tuning, v.id, q, { string: s, fret: f }),
           ).filter(Boolean);
           expect(found.length, `${v.id}/${q.id}/${s}弦`).toBeGreaterThan(0);

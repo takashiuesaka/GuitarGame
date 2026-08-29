@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CHORD_QUALITIES, buildChordShapes, type ChordShape, type VoicingType } from "../src/core/chords";
 import { pitchClassAt, type Position } from "../src/core/fretboard";
 import { noteName, type AccidentalStyle, type NotationMode } from "../src/core/notes";
 import { getTuning } from "../src/core/tuning";
@@ -256,14 +257,16 @@ describe("[S-CHORD-04][S-CHORD-06] コードモードのUI", () => {
     switchMode("chord");
   });
 
-  it("ボイシングを seventh にすると3弦ルートが選べなくなる", () => {
-    const sel = $<HTMLSelectElement>("#chord-voicing");
-    sel.value = "seventh";
-    sel.dispatchEvent(new window.Event("change"));
-    const chips = Array.from(document.querySelectorAll("#chord-root-strings .chip")).map(
-      (c) => c.textContent,
-    );
-    expect(chips).toEqual(["6弦", "5弦", "4弦"]);
+  it("どのボイシングでも1〜6弦がルート弦として並ぶ", () => {
+    for (const v of ["triad", "seventh", "guide"]) {
+      const sel = $<HTMLSelectElement>("#chord-voicing");
+      sel.value = v;
+      sel.dispatchEvent(new window.Event("change"));
+      const chips = Array.from(document.querySelectorAll("#chord-root-strings .chip")).map(
+        (c) => c.textContent,
+      );
+      expect(chips, v).toEqual(["6弦", "5弦", "4弦", "3弦", "2弦", "1弦"]);
+    }
   });
 
   it("コードの種類はボイシングに応じて切り替わり、最低1つは選択されたまま", () => {
@@ -313,5 +316,109 @@ describe("[S-APP-07] キーボード操作", () => {
     document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter" }));
     expect(text("#feedback")).toBe("");
     expect($<HTMLButtonElement>("#next").disabled).toBe(true);
+  });
+});
+
+describe("[S-CHORD-08] 複数ルート弦の連続出題（画面）", () => {
+  /** 表示中の小問の正解シェイプ（代表） */
+  function currentShape(): ChordShape {
+    const name = text("#question-note").trim();
+    const quality = [...CHORD_QUALITIES]
+      .sort((a, b) => b.symbol.length - a.symbol.length)
+      .find((q) => q.symbol === "" || name.endsWith(q.symbol))!;
+    const sub = text("#question-sub");
+    const m = /ルート (\d)弦 (\d+)フレット/.exec(sub);
+    if (!m) throw new Error(`ルート位置を読み取れません: ${sub}`);
+    const root = { string: Number(m[1]), fret: Number(m[2]) };
+    const voicing = $<HTMLSelectElement>("#chord-voicing").value as VoicingType;
+    const shape = buildChordShapes(tuning, voicing, quality, root)[0];
+    if (!shape) throw new Error(`シェイプが見つかりません: ${name} ${sub}`);
+    return shape;
+  }
+
+  /** 表示済みのルート以外をクリックして正解する */
+  function answerChordCorrectly(): void {
+    const shape = currentShape();
+    const rootMarker = document.querySelector(".marker-root");
+    for (const p of shape.positions) {
+      if (rootMarker && p.string === shape.root.string && p.fret === shape.root.fret) continue;
+      clickCell(p);
+    }
+  }
+
+  /** 確実に不正解になる位置をクリックする */
+  function answerChordWrongly(): void {
+    const need = Number(/(\d+)\/(\d+) 選択中/.exec(text("#question-sub"))![2]);
+    for (let i = 0; i < need; i++) clickCell({ string: 1, fret: 24 - i });
+  }
+
+  beforeEach(async () => {
+    await mountApp();
+    switchMode("chord");
+  });
+
+  it("既定では6弦・5弦の2問構成で、進捗が表示される", () => {
+    expect(text("#question-sub")).toContain("6弦ルート（1/2）");
+    expect($("#next").textContent).toContain("次のシェイプ");
+  });
+
+  it("間違えても次のルート弦へ進み、コード名は変わらない", () => {
+    const chord = text("#question-note");
+    answerChordWrongly();
+    expect(text("#feedback")).toContain("残念");
+    expect($<HTMLButtonElement>("#next").disabled).toBe(false);
+    expect($("#next").textContent).toContain("次のシェイプ");
+
+    $<HTMLButtonElement>("#next").click();
+    expect(text("#question-note")).toBe(chord);
+    expect(text("#question-sub")).toContain("5弦ルート（2/2）");
+    expect($("#next").textContent).toContain("次の問題");
+  });
+
+  it("すべての小問を答え終えると新しいコードが出題される", () => {
+    const chord = text("#question-note");
+    answerChordWrongly();
+    $<HTMLButtonElement>("#next").click();
+    answerChordWrongly();
+    $<HTMLButtonElement>("#next").click();
+    expect(text("#question-sub")).toContain("6弦ルート（1/2）");
+    expect(text("#question-note")).not.toBe(chord);
+  });
+
+  it("正解すると自動で次のルート弦へ進む", () => {
+    vi.useFakeTimers();
+    try {
+      const chord = text("#question-note");
+      answerChordCorrectly();
+      expect(text("#feedback")).toContain("正解");
+      vi.advanceTimersByTime(1301);
+      expect(text("#feedback")).toBe("");
+      expect(text("#question-note")).toBe(chord);
+      expect(text("#question-sub")).toContain("5弦ルート（2/2）");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("展開形（ルートが最低音でないシェイプ）でも正解になる", () => {
+    // 5弦ルートの小問へ進めてから、6弦を含む展開形で答える
+    answerChordWrongly();
+    $<HTMLButtonElement>("#next").click();
+
+    const name = text("#question-note").trim();
+    const quality = [...CHORD_QUALITIES]
+      .sort((a, b) => b.symbol.length - a.symbol.length)
+      .find((q) => q.symbol === "" || name.endsWith(q.symbol))!;
+    const m = /ルート (\d)弦 (\d+)フレット/.exec(text("#question-sub"))!;
+    const root = { string: Number(m[1]), fret: Number(m[2]) };
+    const shapes = buildChordShapes(tuning, "triad", quality, root);
+    const inversion = shapes.find((s) => s.rootIndex > 0);
+    if (!inversion) return;
+
+    for (const p of inversion.positions) {
+      if (p.string === root.string && p.fret === root.fret) continue;
+      clickCell(p);
+    }
+    expect(text("#feedback")).toContain("正解");
   });
 });

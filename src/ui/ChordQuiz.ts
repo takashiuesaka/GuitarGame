@@ -1,6 +1,7 @@
 import {
-  buildChordShape,
+  buildChordShapes,
   getChordQuality,
+  getVoicing,
   isVoicingAvailable,
   qualitiesFor,
   samePositionSet,
@@ -8,14 +9,16 @@ import {
   type ChordShape,
   type VoicingType,
 } from "../core/chords";
-import { getVoicing } from "../core/chords";
-import type { Position } from "../core/fretboard";
+import { pitchClassAt, type Position } from "../core/fretboard";
+import type { PitchClass } from "../core/notes";
 import type { Tuning } from "../core/tuning";
 
 /** ルートを配置するフレットの上限 */
 export const CHORD_ROOT_MAX_FRET = 12;
-/** ルート弦として選べる弦 */
-export const CHORD_ROOT_STRINGS = [6, 5, 4, 3];
+/** 低いフレットでシェイプが作れない場合に、ここまでは上を探す */
+const CHORD_ROOT_FALLBACK_FRET = 17;
+/** ルート弦として選べる弦（低音弦から） */
+export const CHORD_ROOT_STRINGS = [6, 5, 4, 3, 2, 1];
 
 export interface ChordQuizConfig {
   voicing: VoicingType;
@@ -25,16 +28,43 @@ export interface ChordQuizConfig {
   showRoot: boolean;
 }
 
+/** 1つのコードに対する、ルート弦ごとの小問 */
+export interface ChordStep {
+  rootString: number;
+  root: Position;
+  /** 正解として受理するシェイプ（展開形を含む） */
+  shapes: ChordShape[];
+  /** 表示用の代表シェイプ */
+  shape: ChordShape;
+}
+
+export interface ChordQuestion {
+  quality: ChordQuality;
+  rootPitchClass: PitchClass;
+  /** 選択されたルート弦ごとの小問。低音弦から順に並ぶ */
+  steps: ChordStep[];
+}
+
 export interface ChordJudgement {
   correct: boolean;
   /** ユーザーが選んだ位置のうち間違っていたもの */
   wrong: Position[];
-  /** 正解のシェイプ */
+  /** 判定に用いたシェイプ（正解ならユーザーが押さえたもの、不正解なら最も近いもの） */
   shape: ChordShape;
+  /** この小問が最後かどうか */
+  isLastStep: boolean;
 }
 
 export interface ChordQuizState {
+  quality: ChordQuality;
+  rootPitchClass: PitchClass;
+  step: ChordStep;
+  stepIndex: number;
+  stepCount: number;
+  /** 現在の小問の代表シェイプ */
   shape: ChordShape;
+  /** 現在の小問で正解となるシェイプ一覧 */
+  shapes: ChordShape[];
   selected: Position[];
   /** あと何音クリックする必要があるか */
   remaining: number;
@@ -44,10 +74,13 @@ export interface ChordQuizState {
   bestCombo: number;
 }
 
+const key = (p: Position): string => `${p.string}-${p.fret}`;
+
 export class ChordQuiz {
   private tuning: Tuning;
   private config: ChordQuizConfig;
-  private shape: ChordShape;
+  private question: ChordQuestion;
+  private stepIndex = 0;
   private selected: Position[] = [];
   private asked = 0;
   private correct = 0;
@@ -58,7 +91,7 @@ export class ChordQuiz {
   constructor(tuning: Tuning, config: Partial<ChordQuizConfig> = {}) {
     this.tuning = tuning;
     this.config = this.normalize(config);
-    this.shape = this.pickShape();
+    this.question = this.pickQuestion();
   }
 
   private normalize(config: Partial<ChordQuizConfig>): ChordQuizConfig {
@@ -75,7 +108,7 @@ export class ChordQuiz {
       rootStrings:
         rootStrings.length > 0
           ? [...new Set(rootStrings)].sort((a, b) => b - a)
-          : CHORD_ROOT_STRINGS.filter((s) => isVoicingAvailable(voicing, s)),
+          : ChordQuiz.availableRootStrings(voicing),
       showRoot: config.showRoot ?? true,
     };
   }
@@ -90,38 +123,64 @@ export class ChordQuiz {
     return list.length > 0 ? list : qualitiesFor(this.config.voicing).slice(0, 1);
   }
 
-  private pickShape(previous?: ChordShape): ChordShape {
-    const qualities = this.qualities();
-    const strings = this.config.rootStrings;
+  /** ルート弦1本ぶんの小問を作る。作れなければ null */
+  private buildStep(
+    quality: ChordQuality,
+    rootPitchClass: PitchClass,
+    rootString: number,
+  ): ChordStep | null {
+    for (let fret = 0; fret <= CHORD_ROOT_FALLBACK_FRET; fret++) {
+      const root: Position = { string: rootString, fret };
+      if (pitchClassAt(this.tuning, root) !== rootPitchClass) continue;
+      const shapes = buildChordShapes(this.tuning, this.config.voicing, quality, root);
+      if (shapes.length > 0) return { rootString, root, shapes, shape: shapes[0] };
+    }
+    return null;
+  }
 
-    for (let attempt = 0; attempt < 120; attempt++) {
+  private buildSteps(quality: ChordQuality, rootPitchClass: PitchClass): ChordStep[] {
+    const steps: ChordStep[] = [];
+    for (const s of this.config.rootStrings) {
+      const step = this.buildStep(quality, rootPitchClass, s);
+      if (step) steps.push(step);
+    }
+    return steps;
+  }
+
+  /**
+   * 出題するコードを1つ選ぶ。
+   * 選択されたルート弦すべてでシェイプが作れる組み合わせを優先する。
+   */
+  private pickQuestion(previous?: ChordQuestion): ChordQuestion {
+    const qualities = this.qualities();
+    const wanted = this.config.rootStrings.length;
+    let fallback: ChordQuestion | null = null;
+
+    for (let attempt = 0; attempt < 200; attempt++) {
       const quality = qualities[Math.floor(Math.random() * qualities.length)];
-      const root: Position = {
-        string: strings[Math.floor(Math.random() * strings.length)],
-        fret: Math.floor(Math.random() * (CHORD_ROOT_MAX_FRET + 1)),
-      };
-      const shape = buildChordShape(this.tuning, this.config.voicing, quality, root);
-      if (!shape) continue;
+      const rootPitchClass = Math.floor(Math.random() * 12) as PitchClass;
       if (
         previous &&
-        previous.quality.id === shape.quality.id &&
-        previous.root.string === shape.root.string &&
-        previous.root.fret === shape.root.fret
+        previous.quality.id === quality.id &&
+        previous.rootPitchClass === rootPitchClass
       ) {
         continue;
       }
-      return shape;
+      const steps = this.buildSteps(quality, rootPitchClass);
+      if (steps.length === 0) continue;
+      const question = { quality, rootPitchClass, steps };
+      if (steps.length === wanted) return question;
+      if (!fallback || steps.length > fallback.steps.length) fallback = question;
     }
 
-    // 生成に失敗した場合はフレットを走査して確実に見つける
+    if (fallback) return fallback;
+
+    // ランダムで見つからない場合は総当たりで探す
     for (const quality of qualities) {
-      for (const string of strings) {
-        for (let fret = 0; fret <= CHORD_ROOT_MAX_FRET; fret++) {
-          const shape = buildChordShape(this.tuning, this.config.voicing, quality, {
-            string,
-            fret,
-          });
-          if (shape) return shape;
+      for (let pc = 0; pc < 12; pc++) {
+        const steps = this.buildSteps(quality, pc as PitchClass);
+        if (steps.length > 0) {
+          return { quality, rootPitchClass: pc as PitchClass, steps };
         }
       }
     }
@@ -129,9 +188,20 @@ export class ChordQuiz {
     throw new Error("有効なコードシェイプを生成できませんでした");
   }
 
+  private get step(): ChordStep {
+    return this.question.steps[this.stepIndex];
+  }
+
   get state(): ChordQuizState {
+    const step = this.step;
     return {
-      shape: this.shape,
+      quality: this.question.quality,
+      rootPitchClass: this.question.rootPitchClass,
+      step,
+      stepIndex: this.stepIndex,
+      stepCount: this.question.steps.length,
+      shape: step.shape,
+      shapes: step.shapes,
       selected: [...this.selected],
       remaining: this.requiredCount() - this.selected.length,
       asked: this.asked,
@@ -153,6 +223,11 @@ export class ChordQuiz {
     return this.config.voicing;
   }
 
+  /** まだ回答していないルート弦が残っているか */
+  get hasNextStep(): boolean {
+    return this.stepIndex < this.question.steps.length - 1;
+  }
+
   /** ユーザーがクリックすべき音数 */
   requiredCount(): number {
     const total = getVoicing(this.config.voicing).noteCount;
@@ -172,13 +247,15 @@ export class ChordQuiz {
   private restart(): void {
     this.selected = [];
     this.answered = false;
-    this.shape = this.pickShape();
+    this.stepIndex = 0;
+    this.question = this.pickQuestion();
   }
 
   /** ルートとして固定表示している位置か */
   isGivenRoot(pos: Position): boolean {
     if (!this.config.showRoot) return false;
-    return pos.string === this.shape.root.string && pos.fret === this.shape.root.fret;
+    const root = this.step.root;
+    return pos.string === root.string && pos.fret === root.fret;
   }
 
   /** 選択のトグル。回答可能な数に達したら true を返す */
@@ -186,9 +263,7 @@ export class ChordQuiz {
     if (this.answered) return { selected: false, ready: false };
     if (this.isGivenRoot(pos)) return { selected: true, ready: false };
 
-    const index = this.selected.findIndex(
-      (p) => p.string === pos.string && p.fret === pos.fret,
-    );
+    const index = this.selected.findIndex((p) => p.string === pos.string && p.fret === pos.fret);
     if (index >= 0) {
       this.selected.splice(index, 1);
       return { selected: false, ready: false };
@@ -202,15 +277,29 @@ export class ChordQuiz {
     return { selected: true, ready: this.selected.length === this.requiredCount() };
   }
 
+  /** ユーザーの選択に最も近いシェイプ（不正解時の答え合わせ用） */
+  private closestShape(): ChordShape {
+    const chosen = new Set(this.selected.map(key));
+    let best = this.step.shape;
+    let bestScore = -1;
+    for (const shape of this.step.shapes) {
+      const score = shape.positions.filter((p) => chosen.has(key(p))).length;
+      if (score > bestScore) {
+        bestScore = score;
+        best = shape;
+      }
+    }
+    return best;
+  }
+
   /** 現在の選択で判定する */
   judge(): ChordJudgement {
-    const answer = this.config.showRoot
-      ? [this.shape.root, ...this.selected]
-      : [...this.selected];
-    const correct = samePositionSet(answer, this.shape.positions);
+    const answer = this.config.showRoot ? [this.step.root, ...this.selected] : [...this.selected];
+    const matched = this.step.shapes.find((s) => samePositionSet(answer, s.positions)) ?? null;
+    const correct = matched !== null;
+    const shape = matched ?? this.closestShape();
 
-    const key = (p: Position) => `${p.string}-${p.fret}`;
-    const expected = new Set(this.shape.positions.map(key));
+    const expected = new Set(shape.positions.map(key));
     const wrong = this.selected.filter((p) => !expected.has(key(p)));
 
     if (!this.answered) {
@@ -225,7 +314,7 @@ export class ChordQuiz {
       }
     }
 
-    return { correct, wrong, shape: this.shape };
+    return { correct, wrong, shape, isLastStep: !this.hasNextStep };
   }
 
   /** 選択をすべて解除する */
@@ -234,11 +323,21 @@ export class ChordQuiz {
     this.selected = [];
   }
 
+  /**
+   * 次へ進む。
+   * 未回答のルート弦が残っていれば同じコードの次のシェイプへ、
+   * すべて答え終えていたら新しいコードを出題する。
+   */
   next(): void {
-    const previous = this.shape;
     this.selected = [];
     this.answered = false;
-    this.shape = this.pickShape(previous);
+    if (this.hasNextStep) {
+      this.stepIndex += 1;
+      return;
+    }
+    const previous = this.question;
+    this.question = this.pickQuestion(previous);
+    this.stepIndex = 0;
   }
 
   reset(): void {

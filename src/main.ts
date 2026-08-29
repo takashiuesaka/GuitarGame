@@ -519,7 +519,7 @@ function chordToneLabel(interval: number): string {
 function renderChordSelection(): void {
   const s = chordQuiz.state;
   const markers: Marker[] = [];
-  if (chordQuiz.showRoot) markers.push({ pos: s.shape.root, kind: "root", text: "R" });
+  if (chordQuiz.showRoot) markers.push({ pos: s.step.root, kind: "root", text: "R" });
   for (const p of s.selected) markers.push({ pos: p, kind: "pending" });
   fretboard.setMarkers(markers);
   updateChordSub();
@@ -529,13 +529,24 @@ function updateChordSub(): void {
   const s = chordQuiz.state;
   const total = chordQuiz.requiredCount();
   const parts: string[] = [getVoicing(chordQuiz.voicing).label];
+  parts.push(
+    s.stepCount > 1
+      ? `${s.step.rootString}弦ルート（${s.stepIndex + 1}/${s.stepCount}）`
+      : `${s.step.rootString}弦ルート`,
+  );
   if (chordQuiz.showRoot || chordQuiz.isAnswered) {
-    parts.push(`ルート ${s.shape.root.string}弦 ${s.shape.root.fret}フレット`);
+    parts.push(`ルート ${s.step.root.string}弦 ${s.step.root.fret}フレット`);
   }
   if (!chordQuiz.isAnswered) {
     parts.push(`あと ${Math.max(0, s.remaining)} 音（${s.selected.length}/${total} 選択中）`);
   }
   questionSub.textContent = parts.join(" ／ ");
+}
+
+/** コードモードでは、同じコードの次のシェイプが残っているかでラベルを変える */
+function updateNextButtonLabel(): void {
+  nextButton.textContent =
+    isChordMode() && chordQuiz.hasNextStep ? "次のシェイプ →" : "次の問題 →";
 }
 
 function handleChordSelect(pos: Position): void {
@@ -582,11 +593,12 @@ function judgeChord(): void {
 
   fretboard.setMarkers(markers);
   nextButton.disabled = false;
+  updateNextButtonLabel();
   updateScore();
   updateChordSub();
 
   if (result.correct) {
-    feedback.textContent = "正解！ 🎉";
+    feedback.textContent = result.isLastStep ? "正解！ 🎉" : "正解！ 🎉 次のルート弦へ";
     feedback.className = "feedback correct";
     synth.playSequence(
       shape.positions.map((p) => midiAt(tuning, p)),
@@ -602,7 +614,9 @@ function judgeChord(): void {
       nextButton.focus();
     }
   } else {
-    feedback.textContent = "残念… 緑が正しいシェイプです。";
+    feedback.textContent = result.isLastStep
+      ? "残念… 緑が正しいシェイプです。"
+      : "残念… 緑が正しいシェイプです。次のルート弦も答えましょう。";
     feedback.className = "feedback wrong";
     answerSoundTimer = window.setTimeout(() => {
       answerSoundTimer = null;
@@ -728,12 +742,13 @@ function refreshBoard(): void {
 }
 
 function updateQuestion(): void {
+  updateNextButtonLabel();
   if (isChordMode()) {
-    const shape = chordQuiz.state.shape;
+    const s = chordQuiz.state;
     questionLabel.textContent = chordQuiz.showRoot
       ? "R（青）をルートに、このコードを押さえて"
       : "このコードを押さえて（ルートも自分で探す）";
-    questionNote.textContent = chordName(noteLabel(shape.rootPitchClass), shape.quality);
+    questionNote.textContent = chordName(noteLabel(s.rootPitchClass), s.quality);
     updateChordSub();
     return;
   }
@@ -780,7 +795,7 @@ function applyMode(): void {
     ? "度数を表示（練習モード）"
     : "音名を表示（練習モード）";
   hint.textContent = chord
-    ? "指板をクリックして構成音をすべて選ぶと自動で判定します。もう一度クリックすると選択を解除できます。"
+    ? "指板をクリックして構成音をすべて選ぶと自動で判定します。展開形（ルートが最低音でない押さえ方）も正解です。選んだルート弦の数だけ続けて出題されます。"
     : degree
       ? "青い R がルートです。指板をクリックして指定された度数の位置を答えてください。"
       : "1弦が上・6弦が下、左が0フレット（開放弦）、右が24フレットです。回答後も指板をクリックすると音を確認できます。";

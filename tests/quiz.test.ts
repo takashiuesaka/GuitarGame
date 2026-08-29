@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { CHORD_QUALITIES, buildChordShape, type VoicingType } from "../src/core/chords";
+import { describe, expect, it, vi } from "vitest";
+import { CHORD_QUALITIES, qualitiesFor, type VoicingType } from "../src/core/chords";
 import { pitchClassAt, type Position } from "../src/core/fretboard";
 import { getTuning } from "../src/core/tuning";
 import { ChordQuiz } from "../src/ui/ChordQuiz";
@@ -194,21 +194,40 @@ describe("[S-CHORD-01] コードシェイプクイズの出題", () => {
   });
 });
 
-describe("[S-CHORD-04] ルート弦の正規化", () => {
-  it("seventh / guide では3弦ルートが除外される", () => {
-    for (const voicing of ["seventh", "guide"] as VoicingType[]) {
-      expect(ChordQuiz.availableRootStrings(voicing)).toEqual([6, 5, 4]);
-      const quiz = new ChordQuiz(tuning, {
-        voicing,
-        qualityIds: ["maj7"],
-        rootStrings: [3],
-      });
-      expect(quiz.state.shape.root.string).not.toBe(3);
+describe("[S-CHORD-04] ルート弦の選択", () => {
+  it("どのボイシングでも1〜6弦をルートに選べる", () => {
+    for (const voicing of ["triad", "seventh", "guide"] as VoicingType[]) {
+      expect(ChordQuiz.availableRootStrings(voicing)).toEqual([6, 5, 4, 3, 2, 1]);
     }
   });
 
-  it("triad では6〜3弦すべて使える", () => {
-    expect(ChordQuiz.availableRootStrings("triad")).toEqual([6, 5, 4, 3]);
+  it("選んだルート弦の数だけ小問が作られる（低音弦から順）", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major", "minor"],
+      rootStrings: [4, 6, 2],
+    });
+    const s = quiz.state;
+    expect(s.stepCount).toBe(3);
+    expect(s.step.rootString).toBe(6);
+    quiz.next();
+    expect(quiz.state.step.rootString).toBe(4);
+    quiz.next();
+    expect(quiz.state.step.rootString).toBe(2);
+  });
+
+  it("1弦・2弦・3弦ルートでも出題できる", () => {
+    for (const voicing of ["triad", "seventh", "guide"] as VoicingType[]) {
+      for (const s of [3, 2, 1]) {
+        const quiz = new ChordQuiz(tuning, {
+          voicing,
+          qualityIds: qualitiesFor(voicing).map((q) => q.id),
+          rootStrings: [s],
+        });
+        expect(quiz.state.step.rootString, `${voicing}/${s}弦`).toBe(s);
+        expect(quiz.state.shapes.length).toBeGreaterThan(0);
+      }
+    }
   });
 });
 
@@ -221,6 +240,12 @@ describe("[S-CHORD-06] 回答の選択操作", () => {
       showRoot,
     });
 
+  /** 表示済みルートを除いた、答えるべき位置 */
+  const answerPositions = (quiz: ChordQuiz): Position[] => {
+    const { shape } = quiz.state;
+    return shape.positions.filter((p) => !quiz.isGivenRoot(p));
+  };
+
   it("ルート表示ONなら必要クリック数は音数-1、OFFなら音数と同じ", () => {
     expect(makeQuiz(true).requiredCount()).toBe(2);
     expect(makeQuiz(false).requiredCount()).toBe(3);
@@ -228,7 +253,7 @@ describe("[S-CHORD-06] 回答の選択操作", () => {
 
   it("同じ位置をもう一度押すと選択が解除される", () => {
     const quiz = makeQuiz(true);
-    const pos = quiz.state.shape.positions[1];
+    const pos = answerPositions(quiz)[0];
     expect(quiz.toggle(pos).selected).toBe(true);
     expect(quiz.state.selected).toHaveLength(1);
     expect(quiz.toggle(pos).selected).toBe(false);
@@ -237,14 +262,14 @@ describe("[S-CHORD-06] 回答の選択操作", () => {
 
   it("必要数に達したときだけ ready になる", () => {
     const quiz = makeQuiz(true);
-    const [, a, b] = quiz.state.shape.positions;
+    const [a, b] = answerPositions(quiz);
     expect(quiz.toggle(a).ready).toBe(false);
     expect(quiz.toggle(b).ready).toBe(true);
   });
 
   it("表示済みのルートはクリックしても選択に含まれない", () => {
     const quiz = makeQuiz(true);
-    const root = quiz.state.shape.root;
+    const root = quiz.state.step.root;
     expect(quiz.isGivenRoot(root)).toBe(true);
     quiz.toggle(root);
     expect(quiz.state.selected).toHaveLength(0);
@@ -252,22 +277,31 @@ describe("[S-CHORD-06] 回答の選択操作", () => {
 
   it("選択をクリアできる", () => {
     const quiz = makeQuiz(true);
-    quiz.toggle(quiz.state.shape.positions[1]);
+    quiz.toggle(answerPositions(quiz)[0]);
     quiz.clearSelection();
     expect(quiz.state.selected).toHaveLength(0);
   });
 });
 
 describe("[S-CHORD-07] コードシェイプクイズの判定", () => {
-  it("完全一致なら正解", () => {
-    const quiz = new ChordQuiz(tuning, {
+  const makeQuiz = (showRoot = true, rootStrings = [6, 5]) =>
+    new ChordQuiz(tuning, {
       voicing: "triad",
-      qualityIds: ["major", "minor"],
-      rootStrings: [6, 5],
-      showRoot: true,
+      qualityIds: ["major"],
+      rootStrings,
+      showRoot,
     });
-    const [, ...rest] = quiz.state.shape.positions;
-    for (const p of rest) quiz.toggle(p);
+
+  const answerCurrent = (quiz: ChordQuiz, shape = quiz.state.shape): void => {
+    for (const p of shape.positions) {
+      if (quiz.isGivenRoot(p)) continue;
+      quiz.toggle(p);
+    }
+  };
+
+  it("完全一致なら正解", () => {
+    const quiz = makeQuiz();
+    answerCurrent(quiz);
     const result = quiz.judge();
     expect(result.correct).toBe(true);
     expect(result.wrong).toHaveLength(0);
@@ -275,44 +309,61 @@ describe("[S-CHORD-07] コードシェイプクイズの判定", () => {
     expect(quiz.state.combo).toBe(1);
   });
 
-  it("1つでも違えば不正解で、間違えた位置が返る", () => {
-    const quiz = new ChordQuiz(tuning, {
-      voicing: "triad",
-      qualityIds: ["major"],
-      rootStrings: [6, 5],
-      showRoot: true,
-    });
-    const shape = quiz.state.shape;
-    const correctPos = shape.positions[1];
-    const wrongPos = { string: shape.positions[2].string, fret: shape.positions[2].fret + 6 };
+  it("展開形（別の正解シェイプ）でも正解になる", () => {
+    // Math.random を固定して同じ問題を再現できるようにする
+    const spy = vi.spyOn(Math, "random").mockReturnValue(0.3);
+    try {
+      const make = () =>
+        new ChordQuiz(tuning, {
+          voicing: "triad",
+          qualityIds: ["major"],
+          rootStrings: [5],
+          showRoot: true,
+        });
+      const shapes = make().state.shapes;
+      expect(shapes.length).toBeGreaterThan(1);
+      expect(shapes.some((s) => s.rootIndex > 0)).toBe(true);
+
+      for (const shape of shapes) {
+        const quiz = make();
+        answerCurrent(quiz, shape);
+        const label = shape.positions.map((p) => `${p.string}-${p.fret}`).join();
+        expect(quiz.judge().correct, label).toBe(true);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("どの正解シェイプにも含まれない位置を選ぶと不正解", () => {
+    const quiz = makeQuiz();
+    const valid = new Set(
+      quiz.state.shapes.flatMap((s) => s.positions.map((p) => `${p.string}-${p.fret}`)),
+    );
+    const correctPos = quiz.state.shape.positions.find((p) => !quiz.isGivenRoot(p))!;
+    let wrongPos: Position | null = null;
+    for (let f = 0; f <= 24 && !wrongPos; f++) {
+      const cand = { string: quiz.state.step.rootString, fret: f };
+      if (!valid.has(`${cand.string}-${cand.fret}`)) wrongPos = cand;
+    }
     quiz.toggle(correctPos);
-    quiz.toggle(wrongPos);
+    quiz.toggle(wrongPos!);
     const result = quiz.judge();
     expect(result.correct).toBe(false);
-    expect(result.wrong).toEqual([wrongPos]);
+    expect(result.wrong).toContainEqual(wrongPos);
     expect(quiz.state.combo).toBe(0);
   });
 
   it("ルート非表示ならルートも含めて答える必要がある", () => {
-    const quiz = new ChordQuiz(tuning, {
-      voicing: "triad",
-      qualityIds: ["major"],
-      rootStrings: [6],
-      showRoot: false,
-    });
-    for (const p of quiz.state.shape.positions) quiz.toggle(p);
+    const quiz = makeQuiz(false, [6]);
+    answerCurrent(quiz);
+    expect(quiz.state.selected).toHaveLength(3);
     expect(quiz.judge().correct).toBe(true);
   });
 
   it("判定は1回だけ集計される", () => {
-    const quiz = new ChordQuiz(tuning, {
-      voicing: "triad",
-      qualityIds: ["major"],
-      rootStrings: [6],
-      showRoot: true,
-    });
-    const [, ...rest] = quiz.state.shape.positions;
-    for (const p of rest) quiz.toggle(p);
+    const quiz = makeQuiz(true, [6]);
+    answerCurrent(quiz);
     quiz.judge();
     quiz.judge();
     expect(quiz.state.asked).toBe(1);
@@ -320,18 +371,106 @@ describe("[S-CHORD-07] コードシェイプクイズの判定", () => {
   });
 });
 
+describe("[S-CHORD-08] 複数ルート弦の連続出題", () => {
+  const makeQuiz = (rootStrings: number[]) =>
+    new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major", "minor"],
+      rootStrings,
+      showRoot: true,
+    });
+
+  it("すべての小問を答え終えるまで、同じコードが出題され続ける", () => {
+    const quiz = makeQuiz([6, 5, 4]);
+    const first = quiz.state;
+    expect(first.stepCount).toBe(3);
+
+    for (let i = 0; i < first.stepCount; i++) {
+      const s = quiz.state;
+      expect(s.stepIndex).toBe(i);
+      expect(s.quality.id).toBe(first.quality.id);
+      expect(s.rootPitchClass).toBe(first.rootPitchClass);
+      expect(s.step.rootString).toBe([6, 5, 4][i]);
+      quiz.next();
+    }
+
+    // 最後の小問の次は新しいコード
+    const next = quiz.state;
+    expect(next.stepIndex).toBe(0);
+    expect(
+      next.quality.id !== first.quality.id || next.rootPitchClass !== first.rootPitchClass,
+    ).toBe(true);
+  });
+
+  it("hasNextStep は最後の小問だけ false", () => {
+    const quiz = makeQuiz([6, 5]);
+    expect(quiz.hasNextStep).toBe(true);
+    quiz.next();
+    expect(quiz.hasNextStep).toBe(false);
+  });
+
+  it("判定結果の isLastStep は最後の小問だけ true", () => {
+    const quiz = makeQuiz([6, 5]);
+    const answer = () => {
+      for (const p of quiz.state.shape.positions) {
+        if (!quiz.isGivenRoot(p)) quiz.toggle(p);
+      }
+      return quiz.judge();
+    };
+    expect(answer().isLastStep).toBe(false);
+    quiz.next();
+    expect(answer().isLastStep).toBe(true);
+  });
+
+  it("途中で間違えても、残りの小問は出題される", () => {
+    const quiz = makeQuiz([6, 5]);
+    const wrong = { string: 1, fret: 24 };
+    quiz.toggle(wrong);
+    quiz.toggle({ string: 1, fret: 23 });
+    expect(quiz.judge().correct).toBe(false);
+    expect(quiz.hasNextStep).toBe(true);
+
+    quiz.next();
+    expect(quiz.state.stepIndex).toBe(1);
+    expect(quiz.state.step.rootString).toBe(5);
+    expect(quiz.state.selected).toHaveLength(0);
+    expect(quiz.isAnswered).toBe(false);
+  });
+
+  it("スコアは小問ごとに加算される", () => {
+    const quiz = makeQuiz([6, 5, 4]);
+    for (let i = 0; i < 3; i++) {
+      for (const p of quiz.state.shape.positions) {
+        if (!quiz.isGivenRoot(p)) quiz.toggle(p);
+      }
+      quiz.judge();
+      quiz.next();
+    }
+    expect(quiz.state.asked).toBe(3);
+    expect(quiz.state.correct).toBe(3);
+    expect(quiz.state.bestCombo).toBe(3);
+  });
+});
+
 describe("[S-CHORD-05] クイズが出すシェイプは常に押弦可能", () => {
-  it("100問生成してもすべて制約を満たす", () => {
+  it("200回送ってもすべて制約を満たす", () => {
     const quiz = new ChordQuiz(tuning, {
       voicing: "seventh",
       qualityIds: CHORD_QUALITIES.filter((q) => q.category === "seventh").map((q) => q.id),
-      rootStrings: [6, 5, 4],
+      rootStrings: [6, 5, 4, 3, 2, 1],
     });
-    for (let i = 0; i < 100; i++) {
-      const shape = quiz.state.shape;
-      const rebuilt = buildChordShape(tuning, shape.voicing, shape.quality, shape.root);
-      expect(rebuilt).not.toBeNull();
-      expect(rebuilt!.positions).toEqual(shape.positions);
+    for (let i = 0; i < 200; i++) {
+      const { shape, shapes, step } = quiz.state;
+      expect(shapes.length).toBeGreaterThan(0);
+      expect(shape.root).toEqual(step.root);
+      expect(shape.root.string).toBe(step.rootString);
+      for (const s of shapes) {
+        expect(s.positions).toHaveLength(4);
+        const fretted = s.positions.map((p) => p.fret).filter((f) => f > 0);
+        if (fretted.length > 0) {
+          expect(Math.max(...fretted) - Math.min(...fretted)).toBeLessThanOrEqual(5);
+        }
+      }
       quiz.next();
     }
   });
