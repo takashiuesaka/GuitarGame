@@ -63,9 +63,46 @@ body {
 }
 
 /* モードごとの表示切替 */
-#app.is-note .mode-degree,
-#app.is-degree .mode-note {
+#app:not(.is-note) .mode-note,
+#app:not(.is-degree) .mode-degree,
+#app:not(.is-chord) .mode-chord {
   display: none;
+}
+
+/* コードモードでは度数系のルート設定を隠す */
+#app.is-chord .root-random-strings,
+#app.is-chord .root-fixed-pitch,
+#app.is-chord .root-fixed-position {
+  display: none;
+}
+
+.chip-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid #3b455a;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.chip:hover {
+  color: var(--text);
+  border-color: #55627d;
+}
+
+.chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #10141c;
+  font-weight: 700;
 }
 
 /* ルートの決め方に応じた表示切替 */
@@ -322,6 +359,11 @@ button.ghost-btn {
 
 .marker-root {
   fill: #5b8dff;
+  stroke: #ffffff;
+}
+
+.marker-pending {
+  fill: var(--accent);
   stroke: #ffffff;
 }
 

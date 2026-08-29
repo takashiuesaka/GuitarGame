@@ -7,9 +7,17 @@ import {
   type DegreeGroup,
   type DegreeStyle,
 } from "./core/degrees";
+import {
+  chordName,
+  getVoicing,
+  qualitiesFor,
+  VOICINGS,
+  type VoicingType,
+} from "./core/chords";
 import { midiAt, type Position } from "./core/fretboard";
 import { noteName, type AccidentalStyle, type NotationMode } from "./core/notes";
 import { getTuning, TUNINGS, type Tuning } from "./core/tuning";
+import { ChordQuiz } from "./ui/ChordQuiz";
 import { DegreeQuiz, ROOT_MAX_FRET, type AnswerScope, type RootMode } from "./ui/DegreeQuiz";
 import { Fretboard, type Marker } from "./ui/Fretboard";
 import { Quiz, type QuestionRange } from "./ui/Quiz";
@@ -17,7 +25,7 @@ import { Quiz, type QuestionRange } from "./ui/Quiz";
 const STORAGE_KEY = "guitar-game-settings";
 
 /** 出題タイプ */
-type GameMode = "note" | "degree";
+type GameMode = "note" | "degree" | "chord";
 
 interface Settings {
   mode: GameMode;
@@ -32,6 +40,10 @@ interface Settings {
   rootMode: RootMode;
   rootPitchClass: number;
   rootPosition: { string: number; fret: number };
+  chordVoicing: VoicingType;
+  chordQualityIds: string[];
+  chordRootStrings: number[];
+  chordShowRoot: boolean;
   showAllNames: boolean;
   autoNext: boolean;
   sound: boolean;
@@ -53,6 +65,10 @@ function loadSettings(): Settings {
     rootMode: "random",
     rootPitchClass: 0,
     rootPosition: { string: 6, fret: 5 },
+    chordVoicing: "triad",
+    chordQualityIds: ["major", "minor"],
+    chordRootStrings: [6, 5],
+    chordShowRoot: true,
     showAllNames: false,
     autoNext: true,
     sound: true,
@@ -87,6 +103,7 @@ app.innerHTML = `
     <div class="mode-tabs" role="tablist">
       <button class="mode-tab" data-mode="note" role="tab">🎵 音名クイズ</button>
       <button class="mode-tab" data-mode="degree" role="tab">🎯 度数クイズ</button>
+      <button class="mode-tab" data-mode="chord" role="tab">🎹 コードシェイプ</button>
     </div>
 
     <div class="controls">
@@ -172,6 +189,23 @@ app.innerHTML = `
         </div>
       </div>
 
+      <label class="control mode-chord">
+        <span>ボイシング</span>
+        <select id="chord-voicing"></select>
+      </label>
+      <div class="control mode-chord">
+        <span>出題するコード</span>
+        <div class="chip-picker" id="chord-qualities"></div>
+      </div>
+      <div class="control mode-chord">
+        <span>ルート弦</span>
+        <div class="chip-picker" id="chord-root-strings"></div>
+      </div>
+      <label class="control checkbox mode-chord">
+        <input type="checkbox" id="chord-show-root" />
+        <span>ルートを表示する</span>
+      </label>
+
       <label class="control">
         <span>チューニング</span>
         <select id="tuning"></select>
@@ -207,6 +241,7 @@ app.innerHTML = `
     </div>
     <div class="feedback" id="feedback"></div>
     <div class="actions">
+      <button id="clear-selection" class="ghost-btn mode-chord">選択をクリア</button>
       <button id="next" class="primary" disabled>次の問題 →</button>
       <button id="reset" class="ghost-btn">スコアをリセット</button>
     </div>
@@ -240,6 +275,11 @@ const rootModeSelect = $<HTMLSelectElement>("#root-mode");
 const rootPitchSelect = $<HTMLSelectElement>("#root-pitch");
 const rootPosStringSelect = $<HTMLSelectElement>("#root-pos-string");
 const rootPosFretSelect = $<HTMLSelectElement>("#root-pos-fret");
+const chordVoicingSelect = $<HTMLSelectElement>("#chord-voicing");
+const chordQualitiesBox = $<HTMLDivElement>("#chord-qualities");
+const chordRootStringsBox = $<HTMLDivElement>("#chord-root-strings");
+const chordShowRootCheckbox = $<HTMLInputElement>("#chord-show-root");
+const clearSelectionButton = $<HTMLButtonElement>("#clear-selection");
 const tuningSelect = $<HTMLSelectElement>("#tuning");
 const toneSelect = $<HTMLSelectElement>("#tone");
 const soundCheckbox = $<HTMLInputElement>("#sound");
@@ -271,9 +311,19 @@ for (let f = 0; f <= ROOT_MAX_FRET; f++) {
   rootPosFretSelect.appendChild(new Option(`${f}フレット`, String(f)));
 }
 
+for (const v of VOICINGS) {
+  chordVoicingSelect.appendChild(new Option(v.label, v.id));
+}
+chordVoicingSelect.value = settings.chordVoicing;
+chordShowRootCheckbox.checked = settings.chordShowRoot;
+
 // 旧バージョンの保存値が残っていた場合に補正する
 if (!DEGREE_GROUPS.some((g) => g.id === settings.degreeGroup)) {
   settings.degreeGroup = "chord-tone";
+  saveSettings(settings);
+}
+if (!VOICINGS.some((v) => v.id === settings.chordVoicing)) {
+  settings.chordVoicing = "triad";
   saveSettings(settings);
 }
 
@@ -308,6 +358,13 @@ const degreeQuiz = new DegreeQuiz(tuning, settings.degreeGroup, settings.answerS
   pitchClass: settings.rootPitchClass,
   position: settings.rootPosition,
   strings: settings.rootStrings,
+});
+
+const chordQuiz = new ChordQuiz(tuning, {
+  voicing: settings.chordVoicing,
+  qualityIds: settings.chordQualityIds,
+  rootStrings: settings.chordRootStrings,
+  showRoot: settings.chordShowRoot,
 });
 
 const fretboard = new Fretboard({
@@ -359,8 +416,78 @@ function refreshRootControls(): void {
 }
 
 const isDegreeMode = (): boolean => settings.mode === "degree";
+const isChordMode = (): boolean => settings.mode === "chord";
 const isAnswered = (): boolean =>
-  isDegreeMode() ? degreeQuiz.isAnswered : noteQuiz.isAnswered;
+  isChordMode()
+    ? chordQuiz.isAnswered
+    : isDegreeMode()
+      ? degreeQuiz.isAnswered
+      : noteQuiz.isAnswered;
+
+/** コードクイズのチップUIを現在のボイシングに合わせて作り直す */
+function buildChordChips(): void {
+  const voicing = settings.chordVoicing;
+  chordVoicingSelect.value = voicing;
+  const qualities = qualitiesFor(voicing);
+  const validIds = settings.chordQualityIds.filter((id) =>
+    qualities.some((q) => q.id === id),
+  );
+  settings.chordQualityIds = validIds.length > 0 ? validIds : [qualities[0].id];
+
+  chordQualitiesBox.replaceChildren();
+  for (const q of qualities) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip";
+    btn.dataset.id = q.id;
+    btn.textContent = q.label;
+    btn.classList.toggle("active", settings.chordQualityIds.includes(q.id));
+    btn.addEventListener("click", () => {
+      const next = new Set(settings.chordQualityIds);
+      if (next.has(q.id)) {
+        if (next.size <= 1) return;
+        next.delete(q.id);
+      } else {
+        next.add(q.id);
+      }
+      settings.chordQualityIds = qualities.filter((x) => next.has(x.id)).map((x) => x.id);
+      saveSettings(settings);
+      buildChordChips();
+      chordQuiz.setConfig({ qualityIds: settings.chordQualityIds });
+      nextQuestion();
+    });
+    chordQualitiesBox.appendChild(btn);
+  }
+
+  const rootStrings = ChordQuiz.availableRootStrings(voicing);
+  const validRoots = settings.chordRootStrings.filter((s) => rootStrings.includes(s));
+  settings.chordRootStrings = validRoots.length > 0 ? validRoots : [rootStrings[0]];
+
+  chordRootStringsBox.replaceChildren();
+  for (const s of rootStrings) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip";
+    btn.dataset.id = String(s);
+    btn.textContent = `${s}弦`;
+    btn.classList.toggle("active", settings.chordRootStrings.includes(s));
+    btn.addEventListener("click", () => {
+      const next = new Set(settings.chordRootStrings);
+      if (next.has(s)) {
+        if (next.size <= 1) return;
+        next.delete(s);
+      } else {
+        next.add(s);
+      }
+      settings.chordRootStrings = rootStrings.filter((x) => next.has(x));
+      saveSettings(settings);
+      buildChordChips();
+      chordQuiz.setConfig({ rootStrings: settings.chordRootStrings });
+      nextQuestion();
+    });
+    chordRootStringsBox.appendChild(btn);
+  }
+}
 
 /** クリック位置に最も近い正解ポジション */
 function nearestAnswer(answers: Position[], from: Position): Position {
@@ -369,8 +496,131 @@ function nearestAnswer(answers: Position[], from: Position): Position {
   return answers.reduce((best, cur) => (dist(cur) < dist(best) ? cur : best));
 }
 
+const CHORD_TONE_LABELS: Record<number, string> = {
+  0: "R",
+  1: "♭9",
+  2: "9",
+  3: "m3",
+  4: "3",
+  5: "11",
+  6: "♭5",
+  7: "5",
+  8: "♯5",
+  9: "6",
+  10: "♭7",
+  11: "M7",
+};
+
+function chordToneLabel(interval: number): string {
+  return CHORD_TONE_LABELS[((interval % 12) + 12) % 12] ?? String(interval);
+}
+
+/** コードクイズ: 選択中の状態を指板に反映 */
+function renderChordSelection(): void {
+  const s = chordQuiz.state;
+  const markers: Marker[] = [];
+  if (chordQuiz.showRoot) markers.push({ pos: s.shape.root, kind: "root", text: "R" });
+  for (const p of s.selected) markers.push({ pos: p, kind: "pending" });
+  fretboard.setMarkers(markers);
+  updateChordSub();
+}
+
+function updateChordSub(): void {
+  const s = chordQuiz.state;
+  const total = chordQuiz.requiredCount();
+  const parts: string[] = [getVoicing(chordQuiz.voicing).label];
+  if (chordQuiz.showRoot || chordQuiz.isAnswered) {
+    parts.push(`ルート ${s.shape.root.string}弦 ${s.shape.root.fret}フレット`);
+  }
+  if (!chordQuiz.isAnswered) {
+    parts.push(`あと ${Math.max(0, s.remaining)} 音（${s.selected.length}/${total} 選択中）`);
+  }
+  questionSub.textContent = parts.join(" ／ ");
+}
+
+function handleChordSelect(pos: Position): void {
+  if (chordQuiz.isAnswered) return;
+  if (chordQuiz.isGivenRoot(pos)) return;
+
+  const { ready } = chordQuiz.toggle(pos);
+  renderChordSelection();
+  if (!ready) {
+    feedback.textContent = "";
+    feedback.className = "feedback";
+    return;
+  }
+  judgeChord();
+}
+
+function judgeChord(): void {
+  const selected = chordQuiz.state.selected;
+  const result = chordQuiz.judge();
+  const shape = result.shape;
+  const key = (p: Position) => `${p.string}-${p.fret}`;
+  const wrongKeys = new Set(result.wrong.map(key));
+  const selectedKeys = new Set(selected.map(key));
+
+  const markers: Marker[] = [];
+  if (chordQuiz.showRoot) markers.push({ pos: shape.root, kind: "root", text: "R" });
+
+  for (const p of selected) {
+    const idx = shape.positions.findIndex((q) => key(q) === key(p));
+    markers.push({
+      pos: p,
+      kind: wrongKeys.has(key(p)) ? "wrong" : "correct",
+      text: idx >= 0 ? chordToneLabel(shape.intervals[idx]) : undefined,
+    });
+  }
+
+  if (!result.correct) {
+    shape.positions.forEach((p, i) => {
+      if (selectedKeys.has(key(p))) return;
+      if (chordQuiz.showRoot && key(p) === key(shape.root)) return;
+      markers.push({ pos: p, kind: "answer", text: chordToneLabel(shape.intervals[i]) });
+    });
+  }
+
+  fretboard.setMarkers(markers);
+  nextButton.disabled = false;
+  updateScore();
+  updateChordSub();
+
+  if (result.correct) {
+    feedback.textContent = "正解！ 🎉";
+    feedback.className = "feedback correct";
+    synth.playSequence(
+      shape.positions.map((p) => midiAt(tuning, p)),
+      110,
+    );
+    if (settings.autoNext) {
+      cancelTimers();
+      autoNextTimer = window.setTimeout(() => {
+        autoNextTimer = null;
+        nextQuestion();
+      }, AUTO_NEXT_DELAY + 400);
+    } else {
+      nextButton.focus();
+    }
+  } else {
+    feedback.textContent = "残念… 緑が正しいシェイプです。";
+    feedback.className = "feedback wrong";
+    answerSoundTimer = window.setTimeout(() => {
+      answerSoundTimer = null;
+      synth.playSequence(
+        shape.positions.map((p) => midiAt(tuning, p)),
+        110,
+      );
+    }, 500);
+    nextButton.focus();
+  }
+}
+
 function handleSelect(pos: Position): void {
   synth.play(midiAt(tuning, pos));
+  if (isChordMode()) {
+    handleChordSelect(pos);
+    return;
+  }
   if (isAnswered()) return;
 
   const markers: Marker[] = [];
@@ -448,7 +698,8 @@ function handleSelect(pos: Position): void {
 
 function nextQuestion(): void {
   cancelTimers();
-  if (isDegreeMode()) degreeQuiz.next();
+  if (isChordMode()) chordQuiz.next();
+  else if (isDegreeMode()) degreeQuiz.next();
   else noteQuiz.next();
   feedback.textContent = "";
   feedback.className = "feedback";
@@ -459,7 +710,10 @@ function nextQuestion(): void {
 
 /** 現在の問題に応じた常設マーカー(ルート)とゴーストラベルを更新 */
 function refreshBoard(): void {
-  if (isDegreeMode()) {
+  if (isChordMode()) {
+    renderChordSelection();
+    fretboard.setGhostLabel(null);
+  } else if (isDegreeMode()) {
     const root = degreeQuiz.state.root;
     fretboard.setMarkers([{ pos: root, kind: "root", text: "R" }]);
     fretboard.setGhostLabel((pos) => {
@@ -474,6 +728,15 @@ function refreshBoard(): void {
 }
 
 function updateQuestion(): void {
+  if (isChordMode()) {
+    const shape = chordQuiz.state.shape;
+    questionLabel.textContent = chordQuiz.showRoot
+      ? "R（青）をルートに、このコードを押さえて"
+      : "このコードを押さえて（ルートも自分で探す）";
+    questionNote.textContent = chordName(noteLabel(shape.rootPitchClass), shape.quality);
+    updateChordSub();
+    return;
+  }
   if (isDegreeMode()) {
     const s = degreeQuiz.state;
     const d = getDegree(s.interval);
@@ -490,7 +753,11 @@ function updateQuestion(): void {
 }
 
 function updateScore(): void {
-  const s = isDegreeMode() ? degreeQuiz.state : noteQuiz.state;
+  const s = isChordMode()
+    ? chordQuiz.state
+    : isDegreeMode()
+      ? degreeQuiz.state
+      : noteQuiz.state;
   $("#score-correct").textContent = String(s.correct);
   $("#score-asked").textContent = String(s.asked);
   $("#score-rate").textContent =
@@ -501,8 +768,10 @@ function updateScore(): void {
 
 function applyMode(): void {
   const degree = isDegreeMode();
+  const chord = isChordMode();
   app.classList.toggle("is-degree", degree);
-  app.classList.toggle("is-note", !degree);
+  app.classList.toggle("is-chord", chord);
+  app.classList.toggle("is-note", !degree && !chord);
   for (const tab of modeTabs) {
     tab.classList.toggle("active", tab.dataset.mode === settings.mode);
     tab.setAttribute("aria-selected", String(tab.dataset.mode === settings.mode));
@@ -510,9 +779,11 @@ function applyMode(): void {
   showNamesLabel.textContent = degree
     ? "度数を表示（練習モード）"
     : "音名を表示（練習モード）";
-  hint.textContent = degree
-    ? "青い R がルートです。指板をクリックして指定された度数の位置を答えてください。"
-    : "1弦が上・6弦が下、左が0フレット（開放弦）、右が24フレットです。回答後も指板をクリックすると音を確認できます。";
+  hint.textContent = chord
+    ? "指板をクリックして構成音をすべて選ぶと自動で判定します。もう一度クリックすると選択を解除できます。"
+    : degree
+      ? "青い R がルートです。指板をクリックして指定された度数の位置を答えてください。"
+      : "1弦が上・6弦が下、左が0フレット（開放弦）、右が24フレットです。回答後も指板をクリックすると音を確認できます。";
 
   cancelTimers();
   feedback.textContent = "";
@@ -525,6 +796,33 @@ function applyMode(): void {
 }
 
 /* ---------- イベント ---------- */
+
+chordVoicingSelect.addEventListener("change", () => {
+  settings.chordVoicing = chordVoicingSelect.value as VoicingType;
+  buildChordChips();
+  saveSettings(settings);
+  chordQuiz.setConfig({
+    voicing: settings.chordVoicing,
+    qualityIds: settings.chordQualityIds,
+    rootStrings: settings.chordRootStrings,
+  });
+  nextQuestion();
+});
+
+chordShowRootCheckbox.addEventListener("change", () => {
+  settings.chordShowRoot = chordShowRootCheckbox.checked;
+  saveSettings(settings);
+  chordQuiz.setConfig({ showRoot: settings.chordShowRoot });
+  nextQuestion();
+});
+
+clearSelectionButton.addEventListener("click", () => {
+  if (chordQuiz.isAnswered) return;
+  chordQuiz.clearSelection();
+  feedback.textContent = "";
+  feedback.className = "feedback";
+  renderChordSelection();
+});
 
 for (const tab of modeTabs) {
   tab.addEventListener("click", () => {
@@ -629,6 +927,7 @@ tuningSelect.addEventListener("change", () => {
   saveSettings(settings);
   noteQuiz.setTuning(tuning);
   degreeQuiz.setTuning(tuning);
+  chordQuiz.setTuning(tuning);
   fretboard.setTuning(tuning);
   nextQuestion();
 });
@@ -668,7 +967,8 @@ nextButton.addEventListener("click", nextQuestion);
 
 resetButton.addEventListener("click", () => {
   cancelTimers();
-  if (isDegreeMode()) degreeQuiz.reset();
+  if (isChordMode()) chordQuiz.reset();
+  else if (isDegreeMode()) degreeQuiz.reset();
   else noteQuiz.reset();
   feedback.textContent = "";
   feedback.className = "feedback";
@@ -685,4 +985,5 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+buildChordChips();
 applyMode();

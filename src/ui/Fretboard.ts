@@ -26,7 +26,7 @@ const BOARD_HEIGHT = STRING_GAP * (STRING_COUNT - 1);
 const TOTAL_WIDTH = PAD_LEFT + OPEN_WIDTH + BOARD_WIDTH + PAD_RIGHT;
 const TOTAL_HEIGHT = PAD_TOP + BOARD_HEIGHT + PAD_BOTTOM;
 
-export type MarkerKind = "correct" | "wrong" | "answer" | "root";
+export type MarkerKind = "correct" | "wrong" | "answer" | "root" | "pending";
 
 export interface FretboardOptions {
   tuning: Tuning;
