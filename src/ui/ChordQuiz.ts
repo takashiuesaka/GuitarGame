@@ -9,7 +9,7 @@ import {
   type ChordShape,
   type VoicingType,
 } from "../core/chords";
-import { pitchClassAt, type Position } from "../core/fretboard";
+import { pitchClassAt, STRING_COUNT, type Position } from "../core/fretboard";
 import type { PitchClass } from "../core/notes";
 import type { Tuning } from "../core/tuning";
 
@@ -66,8 +66,10 @@ export interface ChordQuizState {
   /** 現在の小問で正解となるシェイプ一覧 */
   shapes: ChordShape[];
   selected: Position[];
-  /** あと何音クリックする必要があるか */
+  /** 最低音数まであと何音クリックする必要があるか */
   remaining: number;
+  /** 「回答する」で判定できる状態か（最低音数に達しているか） */
+  canAnswer: boolean;
   asked: number;
   correct: number;
   combo: number;
@@ -203,7 +205,8 @@ export class ChordQuiz {
       shape: step.shape,
       shapes: step.shapes,
       selected: [...this.selected],
-      remaining: this.requiredCount() - this.selected.length,
+      remaining: Math.max(0, this.minCount() - this.selected.length),
+      canAnswer: this.canAnswer,
       asked: this.asked,
       correct: this.correct,
       combo: this.combo,
@@ -228,10 +231,26 @@ export class ChordQuiz {
     return this.stepIndex < this.question.steps.length - 1;
   }
 
-  /** ユーザーがクリックすべき音数 */
-  requiredCount(): number {
+  /** ユーザーがクリックすべき最低音数（構成音がひととおり揃う音数） */
+  minCount(): number {
     const total = getVoicing(this.config.voicing).noteCount;
     return this.config.showRoot ? total - 1 : total;
+  }
+
+  /** ユーザーがクリックできる最大音数（弦の本数まで） */
+  maxCount(): number {
+    return this.config.showRoot ? STRING_COUNT - 1 : STRING_COUNT;
+  }
+
+  /** 最低音数に達していて「回答する」で判定できるか */
+  get canAnswer(): boolean {
+    return !this.answered && this.selected.length >= this.minCount();
+  }
+
+  /** 現在の選択が正解シェイプのいずれかと一致しているか */
+  private matchedShape(): ChordShape | null {
+    const answer = this.config.showRoot ? [this.step.root, ...this.selected] : [...this.selected];
+    return this.step.shapes.find((s) => samePositionSet(answer, s.positions)) ?? null;
   }
 
   setTuning(tuning: Tuning): void {
@@ -258,7 +277,10 @@ export class ChordQuiz {
     return pos.string === root.string && pos.fret === root.fret;
   }
 
-  /** 選択のトグル。回答可能な数に達したら true を返す */
+  /**
+   * 選択のトグル。
+   * 音数は可変なので、選択が正解シェイプのいずれかと一致したときに ready を返す。
+   */
   toggle(pos: Position): { selected: boolean; ready: boolean } {
     if (this.answered) return { selected: false, ready: false };
     if (this.isGivenRoot(pos)) return { selected: true, ready: false };
@@ -269,12 +291,12 @@ export class ChordQuiz {
       return { selected: false, ready: false };
     }
 
-    if (this.selected.length >= this.requiredCount()) {
+    if (this.selected.length >= this.maxCount()) {
       return { selected: false, ready: false };
     }
 
     this.selected.push(pos);
-    return { selected: true, ready: this.selected.length === this.requiredCount() };
+    return { selected: true, ready: this.matchedShape() !== null };
   }
 
   /** ユーザーの選択に最も近いシェイプ（不正解時の答え合わせ用） */
@@ -294,8 +316,7 @@ export class ChordQuiz {
 
   /** 現在の選択で判定する */
   judge(): ChordJudgement {
-    const answer = this.config.showRoot ? [this.step.root, ...this.selected] : [...this.selected];
-    const matched = this.step.shapes.find((s) => samePositionSet(answer, s.positions)) ?? null;
+    const matched = this.matchedShape();
     const correct = matched !== null;
     const shape = matched ?? this.closestShape();
 

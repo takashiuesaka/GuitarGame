@@ -251,9 +251,22 @@ describe("[S-CHORD-06] 回答の選択操作", () => {
     return shape.positions.filter((p) => !quiz.isGivenRoot(p));
   };
 
-  it("ルート表示ONなら必要クリック数は音数-1、OFFなら音数と同じ", () => {
-    expect(makeQuiz(true).requiredCount()).toBe(2);
-    expect(makeQuiz(false).requiredCount()).toBe(3);
+  it("ルート表示ONなら最低クリック数は音数-1、OFFなら音数と同じ", () => {
+    expect(makeQuiz(true).minCount()).toBe(2);
+    expect(makeQuiz(false).minCount()).toBe(3);
+    // オクターブ重複を足せるので上限は弦の本数まで
+    expect(makeQuiz(true).maxCount()).toBe(5);
+    expect(makeQuiz(false).maxCount()).toBe(6);
+  });
+
+  it("最低音数に達すると canAnswer が true になる", () => {
+    const quiz = makeQuiz(true);
+    expect(quiz.state.canAnswer).toBe(false);
+    const [a, b] = answerPositions(quiz);
+    quiz.toggle(a);
+    expect(quiz.state.canAnswer).toBe(false);
+    quiz.toggle(b);
+    expect(quiz.state.canAnswer).toBe(true);
   });
 
   it("同じ位置をもう一度押すと選択が解除される", () => {
@@ -265,11 +278,12 @@ describe("[S-CHORD-06] 回答の選択操作", () => {
     expect(quiz.state.selected).toHaveLength(0);
   });
 
-  it("必要数に達したときだけ ready になる", () => {
+  it("正解シェイプと一致したときだけ ready になる", () => {
     const quiz = makeQuiz(true);
-    const [a, b] = answerPositions(quiz);
-    expect(quiz.toggle(a).ready).toBe(false);
-    expect(quiz.toggle(b).ready).toBe(true);
+    const positions = answerPositions(quiz);
+    positions.forEach((p, i) => {
+      expect(quiz.toggle(p).ready).toBe(i === positions.length - 1);
+    });
   });
 
   it("表示済みのルートはクリックしても選択に含まれない", () => {
@@ -399,8 +413,10 @@ describe("[S-CHORD-07] コードシェイプクイズの判定", () => {
 
   it("ルート非表示ならルートも含めて答える必要がある", () => {
     const quiz = makeQuiz(false, [6]);
+    const expected = quiz.state.shape.positions.length;
     answerCurrent(quiz);
-    expect(quiz.state.selected).toHaveLength(3);
+    expect(quiz.state.selected).toHaveLength(expected);
+    expect(quiz.state.selected).toContainEqual(quiz.state.step.root);
     expect(quiz.judge().correct).toBe(true);
   });
 
@@ -508,7 +524,8 @@ describe("[S-CHORD-05] クイズが出すシェイプは常に押弦可能", () 
       expect(shape.root).toEqual(step.root);
       expect(shape.root.string).toBe(step.rootString);
       for (const s of shapes) {
-        expect(s.positions).toHaveLength(4);
+        expect(s.positions.length).toBeGreaterThanOrEqual(4);
+        expect(s.positions.length).toBeLessThanOrEqual(6);
         const fretted = s.positions.map((p) => p.fret).filter((f) => f > 0);
         if (fretted.length > 0) {
           expect(Math.max(...fretted) - Math.min(...fretted)).toBeLessThanOrEqual(5);

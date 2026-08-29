@@ -295,7 +295,7 @@ describe("[S-CHORD-04][S-CHORD-06] コードモードのUI", () => {
     clickCell({ string: 1, fret: 7 });
     $<HTMLButtonElement>("#clear-selection").click();
     expect(document.querySelectorAll(".marker-pending")).toHaveLength(0);
-    expect(text("#question-sub")).toContain("0/2 選択中");
+    expect(text("#question-sub")).toContain("0 音選択中");
   });
 
   it("補足行にボイシング名・ルート位置・残り音数が出る", () => {
@@ -348,8 +348,9 @@ describe("[S-CHORD-08] 複数ルート弦の連続出題（画面）", () => {
 
   /** 確実に不正解になる位置をクリックする */
   function answerChordWrongly(): void {
-    const need = Number(/(\d+)\/(\d+) 選択中/.exec(text("#question-sub"))![2]);
-    for (let i = 0; i < need; i++) clickCell({ string: 1, fret: 24 - i });
+    const button = $<HTMLButtonElement>("#answer-chord");
+    for (let i = 0; button.disabled && i < 6; i++) clickCell({ string: 1, fret: 24 - i });
+    button.click();
   }
 
   beforeEach(async () => {
@@ -383,6 +384,23 @@ describe("[S-CHORD-08] 複数ルート弦の連続出題（画面）", () => {
     $<HTMLButtonElement>("#next").click();
     expect(text("#question-sub")).toContain("6弦ルート（1/2）");
     expect(text("#question-note")).not.toBe(chord);
+  });
+
+  it("「回答する」は最低音数に達するまで押せない", () => {
+    const button = $<HTMLButtonElement>("#answer-chord");
+    expect(button.disabled).toBe(true);
+    clickCell({ string: 1, fret: 24 });
+    expect(button.disabled).toBe(true);
+    clickCell({ string: 1, fret: 23 });
+    expect(button.disabled).toBe(false);
+    $<HTMLButtonElement>("#clear-selection").click();
+    expect(button.disabled).toBe(true);
+  });
+
+  it("正解シェイプと一致したら「回答する」を押さなくても自動で判定される", () => {
+    answerChordCorrectly();
+    expect(text("#feedback")).toContain("正解");
+    expect($<HTMLButtonElement>("#answer-chord").disabled).toBe(true);
   });
 
   it("正解すると自動で次のルート弦へ進む", () => {

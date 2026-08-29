@@ -85,7 +85,9 @@ describe("[S-CHORD-02] ボイシング定義", () => {
       const groups = voicingStringGroups(v);
       const count = getVoicing(v).noteCount;
       for (const g of groups) {
-        expect(g.length, JSON.stringify(g)).toBe(count);
+        // オクターブ重複を許すので、構成音の数から6本までの可変長
+        expect(g.length, JSON.stringify(g)).toBeGreaterThanOrEqual(count);
+        expect(g.length, JSON.stringify(g)).toBeLessThanOrEqual(6);
         // 低音弦→高音弦の順で、飛ばせるのは1本まで
         for (let i = 1; i < g.length; i++) {
           expect(g[i - 1] - g[i], JSON.stringify(g)).toBeGreaterThanOrEqual(1);
@@ -242,10 +244,14 @@ describe("[S-CHORD-05] シェイプ生成", () => {
   it("生成されたシェイプは音数・弦の並び・度数がボイシング定義と一致する", () => {
     for (const shape of allShapes()) {
       const groups = stringSets(shape.voicing, shape.root.string);
-      expect(shape.positions).toHaveLength(getVoicing(shape.voicing).noteCount);
+      // 構成音がひととおり揃っていればよく、オクターブ重複で音数は増えうる
+      expect(shape.positions.length).toBeGreaterThanOrEqual(getVoicing(shape.voicing).noteCount);
+      expect(shape.positions.length).toBeLessThanOrEqual(6);
       const strings = shape.positions.map((p) => p.string);
       expect(groups).toContainEqual(strings);
-      const pcs = shape.intervals.map((i) => ((i % 12) + 12) % 12).sort((a, b) => a - b);
+      const pcs = [...new Set(shape.intervals.map((i) => ((i % 12) + 12) % 12))].sort(
+        (a, b) => a - b,
+      );
       const expected = [...shape.quality.intervals].sort((a, b) => a - b);
       const wanted =
         shape.voicing === "guide"
@@ -305,12 +311,53 @@ describe("[S-CHORD-05] シェイプ生成", () => {
     }
   });
 
+  it("オクターブ重複を含むシェイプも生成される（バレーコード形）", () => {
+    const major = CHORD_QUALITIES.find((q) => q.id === "major")!;
+    const maj7 = CHORD_QUALITIES.find((q) => q.id === "maj7")!;
+    const key = (list: { string: number; fret: number }[]) =>
+      list.map((p) => `${p.string}-${p.fret}`).join("|");
+
+    // 開放 E メジャー（022100）は 5th と root が重複する 6 音シェイプ
+    const openE = buildChordShapes(tuning, "triad", major, { string: 6, fret: 0 });
+    expect(openE.map((s) => key(s.positions))).toContain(
+      key([
+        { string: 6, fret: 0 },
+        { string: 5, fret: 2 },
+        { string: 4, fret: 2 },
+        { string: 3, fret: 1 },
+        { string: 2, fret: 0 },
+        { string: 1, fret: 0 },
+      ]),
+    );
+
+    // C#maj7 の A フォーム: 5th が 4弦と1弦に重複する
+    const cs = buildChordShapes(tuning, "seventh", maj7, { string: 5, fret: 4 });
+    expect(cs.map((s) => key(s.positions))).toContain(
+      key([
+        { string: 5, fret: 4 },
+        { string: 4, fret: 6 },
+        { string: 3, fret: 5 },
+        { string: 2, fret: 6 },
+        { string: 1, fret: 4 },
+      ]),
+    );
+    // 重複なしのドロップ2が代表シェイプ
+    expect(key(cs[0].positions)).toBe(
+      key([
+        { string: 5, fret: 4 },
+        { string: 4, fret: 6 },
+        { string: 3, fret: 5 },
+        { string: 2, fret: 6 },
+      ]),
+    );
+  });
+
   it("展開形（ルートが最低音でないシェイプ）も生成される", () => {
     const major = CHORD_QUALITIES.find((q) => q.id === "major")!;
     // 1弦ルートは必ず展開形になる（1弦より高い弦がない）
     const shapes = buildChordShapes(tuning, "triad", major, { string: 1, fret: 8 });
     expect(shapes.length).toBeGreaterThan(0);
-    for (const s of shapes) expect(s.rootIndex).toBe(2);
+    for (const s of shapes) expect(s.rootIndex).toBe(s.positions.length - 1);
 
     // 5弦ルートはルートが最低音のものと、6弦を含む展開形の両方がある
     const fifth = buildChordShapes(tuning, "triad", major, { string: 5, fret: 3 });

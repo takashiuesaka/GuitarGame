@@ -86,15 +86,17 @@ export const MAX_STRING_SKIP = 1;
 
 /**
  * ボイシングで使える弦の組み合わせ（低音弦→高音弦の順）をすべて返す。
+ * 構成音をオクターブで重複させて弦を増やせるので、
+ * 本数は「構成音の数」から6本までを許す。
  * 隣同士の弦だけでなく、弦を飛ばした組み合わせも含む
  * （飛ばせるのは連続 MAX_STRING_SKIP 本まで）。
  */
 export function voicingStringGroups(voicing: VoicingType): number[][] {
-  const count = getVoicing(voicing).noteCount;
+  const min = getVoicing(voicing).noteCount;
   const groups: number[][] = [];
   const current: number[] = [];
 
-  const walk = (next: number): void => {
+  const walk = (count: number, next: number): void => {
     if (current.length === count) {
       groups.push(current.slice());
       return;
@@ -103,12 +105,12 @@ export function voicingStringGroups(voicing: VoicingType): number[][] {
       const prev = current[current.length - 1];
       if (prev !== undefined && prev - s > MAX_STRING_SKIP + 1) break;
       current.push(s);
-      walk(s - 1);
+      walk(count, s - 1);
       current.pop();
     }
   };
 
-  walk(STRING_COUNT);
+  for (let count = min; count <= STRING_COUNT; count++) walk(count, STRING_COUNT);
   return groups;
 }
 
@@ -121,7 +123,10 @@ export function stringSets(voicing: VoicingType, rootString: number): number[][]
   return voicingStringGroups(voicing)
     .filter((g) => g.includes(rootString))
     .sort(
-      (a, b) => a.indexOf(rootString) - b.indexOf(rootString) || spread(a) - spread(b),
+      (a, b) =>
+        a.indexOf(rootString) - b.indexOf(rootString) ||
+        a.length - b.length ||
+        spread(a) - spread(b),
     );
 }
 
@@ -214,9 +219,17 @@ export function isPlayableShape(positions: Position[]): boolean {
   return fingers !== null && fingers <= MAX_FINGERS;
 }
 
+interface Candidate {
+  pos: Position;
+  midi: number;
+  /** 構成音のビット */
+  bit: number;
+}
+
 /**
  * ルート位置を含むコードシェイプをすべて生成する。
- * 各弦に構成音を1音ずつ、音高が低音弦から高音弦へ昇順になるよう配置する。
+ * 弦ごとに構成音を1音ずつ、音高が低音弦から高音弦へ昇順になるよう配置する。
+ * 構成音はオクターブで重複してよく（バレーコードのような形）、
  * ルートが最低音でないもの（展開形）も含まれる。
  */
 export function buildChordShapes(
@@ -225,8 +238,12 @@ export function buildChordShapes(
   quality: ChordQuality,
   root: Position,
 ): ChordShape[] {
-  const tones = voicingTones(voicing, quality);
-  if (tones.some((t) => !Number.isFinite(t))) return [];
+  const rawTones = voicingTones(voicing, quality);
+  if (rawTones.some((t) => !Number.isFinite(t))) return [];
+
+  const tones = [...new Set(rawTones.map(mod12))];
+  const bitOf = new Map(tones.map((t, i) => [t, 1 << i]));
+  const fullMask = (1 << tones.length) - 1;
 
   const rootMidi = midiAt(tuning, root);
   const shapes: ChordShape[] = [];
@@ -238,31 +255,49 @@ export function buildChordShapes(
   const highFret =
     root.fret === 0 ? Math.min(MAX_FRET, MAX_GAP) : Math.min(MAX_FRET, root.fret + MAX_SPAN);
 
+  const candidateCache = new Map<number, Candidate[]>();
+  const candidatesOn = (string: number): Candidate[] => {
+    const cached = candidateCache.get(string);
+    if (cached) return cached;
+    const list: Candidate[] = [];
+    const add = (fret: number): void => {
+      const pos = { string, fret };
+      const midi = midiAt(tuning, pos);
+      const bit = bitOf.get(mod12(midi - rootMidi));
+      if (bit !== undefined) list.push({ pos, midi, bit });
+    };
+    if (lowFret > 0) add(0); // 開放弦も候補に含める
+    for (let fret = lowFret; fret <= highFret; fret++) add(fret);
+    list.sort((x, y) => x.midi - y.midi);
+    candidateCache.set(string, list);
+    return list;
+  };
+
+  const rootCandidate: Candidate = {
+    pos: root,
+    midi: rootMidi,
+    bit: bitOf.get(0) ?? 0,
+  };
+
   for (const strings of stringSets(voicing, root.string)) {
     const rootIndex = strings.indexOf(root.string);
-    if (tones.length !== strings.length) continue;
-
-    const used = new Array<boolean>(tones.length).fill(false);
-    const chosen: Position[] = [];
+    const chosen: Candidate[] = [];
 
     const spanOk = (): boolean => {
-      const f = chosen.filter((p) => p.fret > 0).map((p) => p.fret);
-      return f.length === 0 || Math.max(...f) - Math.min(...f) <= MAX_SPAN;
+      let min = Infinity;
+      let max = -Infinity;
+      for (const c of chosen) {
+        if (c.pos.fret === 0) continue;
+        if (c.pos.fret < min) min = c.pos.fret;
+        if (c.pos.fret > max) max = c.pos.fret;
+      }
+      return max - min <= MAX_SPAN;
     };
 
-    const place = (index: number, pos: Position, toneIndex: number, prevMidi: number | null) => {
-      const midi = midiAt(tuning, pos);
-      if (prevMidi !== null && (midi <= prevMidi || midi - prevMidi > MAX_GAP)) return;
-      used[toneIndex] = true;
-      chosen.push(pos);
-      if (spanOk()) dfs(index + 1, midi);
-      chosen.pop();
-      used[toneIndex] = false;
-    };
-
-    const dfs = (index: number, prevMidi: number | null): void => {
+    const dfs = (index: number, prevMidi: number | null, mask: number): void => {
       if (index === strings.length) {
-        const positions = chosen.slice();
+        if (mask !== fullMask) return;
+        const positions = chosen.map((c) => c.pos);
         const fingers = requiredFingers(positions);
         if (fingers === null || fingers > MAX_FINGERS) return;
         const key = positions.map(posKey).join("|");
@@ -274,51 +309,54 @@ export function buildChordShapes(
           root,
           rootPitchClass: mod12(rootMidi) as PitchClass,
           positions,
-          intervals: positions.map((p) => midiAt(tuning, p) - rootMidi),
+          intervals: chosen.map((c) => c.midi - rootMidi),
           rootIndex,
           fingers,
         });
         return;
       }
 
-      if (index === rootIndex) {
-        const toneIndex = tones.indexOf(0);
-        if (toneIndex < 0 || used[toneIndex]) return;
-        place(index, root, toneIndex, prevMidi);
-        return;
-      }
+      // 残りの弦で足りない構成音を埋めきれないなら打ち切る
+      let missing = 0;
+      for (let i = 0; i < tones.length; i++) if ((mask & (1 << i)) === 0) missing++;
+      if (missing > strings.length - index) return;
 
-      for (let t = 0; t < tones.length; t++) {
-        if (used[t]) continue;
-        const target = mod12(tones[t]);
-        for (let fret = lowFret; fret <= highFret; fret++) {
-          const pos = { string: strings[index], fret };
-          if (mod12(midiAt(tuning, pos) - rootMidi) !== target) continue;
-          place(index, pos, t, prevMidi);
-        }
-        // 開放弦も候補に含める
-        if (lowFret > 0) {
-          const open = { string: strings[index], fret: 0 };
-          if (mod12(midiAt(tuning, open) - rootMidi) === target) place(index, open, t, prevMidi);
-        }
+      const list = index === rootIndex ? [rootCandidate] : candidatesOn(strings[index]);
+      for (const c of list) {
+        if (prevMidi !== null && (c.midi <= prevMidi || c.midi - prevMidi > MAX_GAP)) continue;
+        chosen.push(c);
+        if (spanOk()) dfs(index + 1, c.midi, mask | c.bit);
+        chosen.pop();
       }
     };
 
-    dfs(0, null);
+    dfs(0, null, 0);
   }
 
   const span = (s: ChordShape): number => {
     const f = s.positions.filter((p) => p.fret > 0).map((p) => p.fret);
     return f.length === 0 ? 0 : Math.max(...f) - Math.min(...f);
   };
-  const stringSpread = (s: ChordShape): number =>
-    s.positions[0].string - s.positions[s.positions.length - 1].string;
+  /** 飛ばしている弦の本数 */
+  const skips = (s: ChordShape): number =>
+    s.positions[0].string - s.positions[s.positions.length - 1].string - (s.positions.length - 1);
+  /**
+   * セブンス系はクローズドボイシング（1オクターブ内に収まる形）よりも
+   * ドロップ2・ドロップ3のような開離ボイシングが一般的なので後回しにする。
+   */
+  const closedPenalty = (s: ChordShape): number => {
+    if (quality.category !== "seventh") return 0;
+    const range = s.intervals[s.intervals.length - 1] - s.intervals[0];
+    return range < 12 ? 1 : 0;
+  };
 
   return shapes.sort(
     (a, b) =>
       a.rootIndex - b.rootIndex ||
+      skips(a) - skips(b) ||
+      a.positions.length - b.positions.length ||
+      closedPenalty(a) - closedPenalty(b) ||
       a.fingers - b.fingers ||
-      stringSpread(a) - stringSpread(b) ||
       span(a) - span(b) ||
       Math.max(...a.positions.map((p) => p.fret)) - Math.max(...b.positions.map((p) => p.fret)),
   );

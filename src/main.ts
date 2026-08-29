@@ -242,6 +242,7 @@ app.innerHTML = `
     <div class="feedback" id="feedback"></div>
     <div class="actions">
       <button id="clear-selection" class="ghost-btn mode-chord">選択をクリア</button>
+      <button id="answer-chord" class="ghost-btn mode-chord" disabled>回答する</button>
       <button id="next" class="primary" disabled>次の問題 →</button>
       <button id="reset" class="ghost-btn">スコアをリセット</button>
     </div>
@@ -280,6 +281,7 @@ const chordQualitiesBox = $<HTMLDivElement>("#chord-qualities");
 const chordRootStringsBox = $<HTMLDivElement>("#chord-root-strings");
 const chordShowRootCheckbox = $<HTMLInputElement>("#chord-show-root");
 const clearSelectionButton = $<HTMLButtonElement>("#clear-selection");
+const answerChordButton = $<HTMLButtonElement>("#answer-chord");
 const tuningSelect = $<HTMLSelectElement>("#tuning");
 const toneSelect = $<HTMLSelectElement>("#tone");
 const soundCheckbox = $<HTMLInputElement>("#sound");
@@ -527,7 +529,6 @@ function renderChordSelection(): void {
 
 function updateChordSub(): void {
   const s = chordQuiz.state;
-  const total = chordQuiz.requiredCount();
   const parts: string[] = [getVoicing(chordQuiz.voicing).label];
   parts.push(
     s.stepCount > 1
@@ -538,9 +539,19 @@ function updateChordSub(): void {
     parts.push(`ルート ${s.step.root.string}弦 ${s.step.root.fret}フレット`);
   }
   if (!chordQuiz.isAnswered) {
-    parts.push(`あと ${Math.max(0, s.remaining)} 音（${s.selected.length}/${total} 選択中）`);
+    parts.push(
+      s.remaining > 0
+        ? `あと ${s.remaining} 音以上（${s.selected.length} 音選択中）`
+        : `${s.selected.length} 音選択中（オクターブを足してもOK）`,
+    );
   }
   questionSub.textContent = parts.join(" ／ ");
+  updateAnswerButton();
+}
+
+/** 「回答する」ボタンの有効・無効 */
+function updateAnswerButton(): void {
+  answerChordButton.disabled = !isChordMode() || !chordQuiz.state.canAnswer;
 }
 
 /** コードモードでは、同じコードの次のシェイプが残っているかでラベルを変える */
@@ -795,7 +806,7 @@ function applyMode(): void {
     ? "度数を表示（練習モード）"
     : "音名を表示（練習モード）";
   hint.textContent = chord
-    ? "指板をクリックして構成音をすべて選ぶと自動で判定します。展開形（ルートが最低音でない押さえ方）や、弦を1本飛ばした押さえ方も正解です。ただし人間が押弦できないシェイプは不正解です。選んだルート弦の数だけ続けて出題されます。"
+    ? "指板をクリックして構成音をすべて選ぶと、正解シェイプと一致した瞬間に自動で判定します。展開形（ルートが最低音でない押さえ方）、弦を1本飛ばした押さえ方、構成音をオクターブで重ねたバレーコード形も正解です。ただし人間が押弦できないシェイプは不正解です。一致しないまま確定したいときは「回答する」を押してください。選んだルート弦の数だけ続けて出題されます。"
     : degree
       ? "青い R がルートです。指板をクリックして指定された度数の位置を答えてください。"
       : "1弦が上・6弦が下、左が0フレット（開放弦）、右が24フレットです。回答後も指板をクリックすると音を確認できます。";
@@ -837,6 +848,11 @@ clearSelectionButton.addEventListener("click", () => {
   feedback.textContent = "";
   feedback.className = "feedback";
   renderChordSelection();
+});
+
+answerChordButton.addEventListener("click", () => {
+  if (chordQuiz.isAnswered || !chordQuiz.state.canAnswer) return;
+  judgeChord();
 });
 
 for (const tab of modeTabs) {
