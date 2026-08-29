@@ -4,9 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit && vitest run",
     "preview": "vite preview"
   },
   "keywords": [],
@@ -14,7 +16,9 @@
   "license": "ISC",
   "type": "module",
   "devDependencies": {
+    "jsdom": "^30.0.1",
     "typescript": "^7.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
   }
 }

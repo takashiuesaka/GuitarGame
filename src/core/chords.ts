@@ -124,6 +124,8 @@ export interface ChordShape {
 
 /** 押弦幅の上限（フレット数） */
 const MAX_SPAN = 5;
+/** 隣り合う構成音の音程の上限（半音）。クローズボイシングを保つ */
+const MAX_GAP = 12;
 
 /**
  * ルート位置からクローズボイシングのコードシェイプを生成する。
@@ -161,9 +163,11 @@ export function buildChordShape(
     }
 
     if (!found) return null;
+    const foundMidi = midiAt(tuning, found);
+    if (foundMidi - previousMidi > MAX_GAP) return null;
     positions.push(found);
-    intervals.push(midiAt(tuning, found) - rootMidi);
-    previousMidi = midiAt(tuning, found);
+    intervals.push(foundMidi - rootMidi);
+    previousMidi = foundMidi;
   }
 
   // 押さえられる幅に収まっているか確認する

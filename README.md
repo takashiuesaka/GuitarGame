@@ -10,7 +10,14 @@ npm install
 npm run dev     # http://localhost:5173/ で起動
 npm run build   # 型チェック + 本番ビルド (dist/)
 npm run preview # ビルド結果の確認
+npm test        # テスト実行 (vitest)
+npm run check   # 型チェック + テスト（仕様適合の判定基準）
 ```
+
+## ドキュメント
+
+- **[docs/SPEC.md](docs/SPEC.md)** — 全機能の仕様（仕様ID付き）。実装を変えたらここも更新します。
+- **[.github/copilot-instructions.md](.github/copilot-instructions.md)** — AIエージェント向けの作業ルール。
 
 ## ゲームモード
 
@@ -86,4 +93,22 @@ src/
     ├─ Quiz.ts          音名クイズのロジック
     ├─ DegreeQuiz.ts    度数クイズのロジック
     └─ ChordQuiz.ts     コードシェイプクイズのロジック
+
+tests/
+├─ setup.ts             テスト用の localStorage 差し込み
+├─ core.test.ts         音名・度数・コード生成などの純ロジック
+├─ quiz.test.ts         出題・判定ロジック
+└─ app.test.ts          jsdom 上での画面結合テスト（自動送りなど）
 ```
+
+## テスト
+
+仕様（`docs/SPEC.md`）の各項目には `[S-APP-05]` のような仕様IDが付いており、
+テストの `describe` / `it` タイトルに同じIDを書いて対応づけています。
+
+```bash
+npm test          # 一度だけ実行
+npm run test:watch
+npm run check     # tsc --noEmit && vitest run
+```
+
