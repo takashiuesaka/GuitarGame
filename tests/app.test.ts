@@ -263,11 +263,14 @@ describe("[S-CHORD-04][S-CHORD-06] コードモードのUI", () => {
       Array.from(document.querySelectorAll("#chord-root-strings .chip")).map((c) => c.textContent);
     const sel = $<HTMLSelectElement>("#chord-voicing");
 
-    for (const v of ["triad", "seventh"]) {
-      sel.value = v;
-      sel.dispatchEvent(new window.Event("change"));
-      expect(rootChips(), v).toEqual(["6弦", "5弦", "4弦", "3弦", "2弦", "1弦"]);
-    }
+    // 既定は基本形のみ。基本形はどの弦セットでも最低音弦がルートになる
+    sel.value = "triad";
+    sel.dispatchEvent(new window.Event("change"));
+    expect(rootChips()).toEqual(["6弦", "5弦", "4弦", "3弦"]);
+
+    sel.value = "seventh";
+    sel.dispatchEvent(new window.Event("change"));
+    expect(rootChips()).toEqual(["6弦", "5弦", "4弦"]);
 
     // ガイドトーンは6弦・5弦ルートの定番フォームしかない
     sel.value = "guide";
@@ -451,14 +454,207 @@ describe("[S-CHORD-08] 複数ルート弦の連続出題（画面）", () => {
       .find((q) => q.symbol === "" || name.endsWith(q.symbol))!;
     const m = /ルート (\d)弦 (\d+)フレット/.exec(text("#question-sub"))!;
     const root = { string: Number(m[1]), fret: Number(m[2]) };
-    const shapes = catalogChordShapes(tuning, "triad", quality, root);
-    const inversion = shapes.find((s) => s.rootIndex > 0);
-    if (!inversion) return;
+    const shapes = catalogChordShapes(tuning, "triad", quality, root, 0);
+    // 同じ転回形でも押さえ方が複数あることがあるので、代表以外でも正解になること
+    const other = shapes.slice(1).find((s) => s.positions.length > 0);
+    if (!other) return;
 
-    for (const p of inversion.positions) {
+    for (const p of other.positions) {
       if (p.string === root.string && p.fret === root.fret) continue;
       clickCell(p);
     }
     expect(text("#feedback")).toContain("正解");
+  });
+});
+
+describe("[S-CHORD-10] 転回形の選択（画面）", () => {
+  const invChips = () =>
+    Array.from(document.querySelectorAll("#chord-inversions .chip")) as HTMLButtonElement[];
+  const activeInvChips = () => invChips().filter((c) => c.classList.contains("active"));
+
+  /** ルート弦を1本だけに絞る。チップはクリックのたびに作り直されるので毎回取り直す */
+  const onlyRootString = (label: string): void => {
+    const chip = (l: string) =>
+      (
+        Array.from(document.querySelectorAll("#chord-root-strings .chip")) as HTMLButtonElement[]
+      ).find((c) => c.textContent === l);
+    if (!chip(label)!.classList.contains("active")) chip(label)!.click();
+    for (const l of ["6弦", "5弦", "4弦", "3弦", "2弦", "1弦"]) {
+      if (l === label) continue;
+      const c = chip(l);
+      if (c?.classList.contains("active")) c.click();
+    }
+  };
+
+  beforeEach(async () => {
+    await mountApp();
+    switchMode("chord");
+  });
+
+  it("ボイシングごとに選べる転回形が並び、既定は基本形だけ", () => {
+    expect(invChips().map((c) => c.textContent)).toEqual(["基本形", "第1転回", "第2転回"]);
+    expect(activeInvChips().map((c) => c.textContent)).toEqual(["基本形"]);
+
+    const sel = $<HTMLSelectElement>("#chord-voicing");
+    sel.value = "seventh";
+    sel.dispatchEvent(new window.Event("change"));
+    expect(invChips().map((c) => c.textContent)).toEqual([
+      "基本形",
+      "第1転回",
+      "第2転回",
+      "第3転回",
+    ]);
+
+    // ガイドトーンは基本形しかないので、連続出題の設定も無効になる
+    sel.value = "guide";
+    sel.dispatchEvent(new window.Event("change"));
+    expect(invChips().map((c) => c.textContent)).toEqual(["基本形"]);
+    expect($<HTMLInputElement>("#chord-ask-all-inversions").disabled).toBe(true);
+  });
+
+  it("転回形を切り替えると出題と補足行に反映される", () => {
+    invChips()[1].click(); // 第1転回を追加
+    invChips()[0].click(); // 基本形を外す
+    expect(activeInvChips().map((c) => c.textContent)).toEqual(["第1転回"]);
+    expect(text("#question-sub")).toContain("第1転回");
+  });
+
+  it("転回形を変えるとルート弦の選択肢も変わる", () => {
+    const rootChips = () =>
+      Array.from(document.querySelectorAll("#chord-root-strings .chip")).map((c) => c.textContent);
+    expect(rootChips()).toEqual(["6弦", "5弦", "4弦", "3弦"]);
+
+    invChips()[1].click();
+    invChips()[0].click();
+    // 第1転回はルートが弦セットの最高音弦になる
+    expect(rootChips()).toEqual(["4弦", "3弦", "2弦", "1弦"]);
+  });
+
+  it("転回形と連続出題の設定が保存される", () => {
+    invChips()[1].click();
+    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+
+    const saved = JSON.parse(localStorage.getItem("guitar-game-settings") ?? "{}");
+    expect(saved.chordInversions).toEqual([0, 1]);
+    expect(saved.chordAskAllInversions).toBe(true);
+  });
+
+  it("連続出題を ON にすると転回形ごとに小問が並ぶ", () => {
+    invChips()[1].click();
+    invChips()[2].click();
+    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+
+    // ルート弦を4弦だけに絞ると、その弦で作れる転回形の数だけ小問が並ぶ
+    onlyRootString("4弦");
+    // 小問の総数は問題によって変わる（小問の中身は quiz.test.ts で検証）
+    const sub = text("#question-sub");
+    expect(sub).toContain("4弦ルート");
+    // 転回形が1つしか作れない問題もあるので、複数のときだけ (i/n) 表記になる
+    const m = /4弦ルート（(\d)\/(\d)）/.exec(sub);
+    if (m) expect(Number(m[1])).toBeLessThanOrEqual(Number(m[2]));
+  });
+
+  it("複数選ぶと、いくつの転回形から選べるかが出題時に分かる", () => {
+    // 実際に作れる転回形の数は問題によって変わるので、表記の形だけを検証する
+    invChips()[1].click();
+    invChips()[2].click();
+    onlyRootString("4弦");
+    const sub = text("#question-sub");
+    // 候補が複数なら「転回形 N種（…）のどれでも」、1つなら転回形名だけを表示する
+    expect(sub).toMatch(/転回形 \d種（[^）]+）のどれでも|基本形|第1転回|第2転回/);
+    const m = /転回形 (\d)種（([^）]+)）のどれでも/.exec(sub);
+    if (m) expect(m[2].split("・").length).toBe(Number(m[1]));
+  });
+
+  it("正解すると、答えたのが何転回だったかと残りの転回形が表示される", () => {
+    invChips()[1].click();
+    invChips()[2].click();
+    onlyRootString("4弦");
+
+    // 補足行から現在の問題を復元し、候補のシェイプで答える
+    const name = text("#question-note").trim();
+    const quality = [...CHORD_QUALITIES]
+      .sort((a, b) => b.symbol.length - a.symbol.length)
+      .find((q) => q.symbol === "" || name.endsWith(q.symbol))!;
+    const m = /ルート (\d)弦 (\d+)フレット/.exec(text("#question-sub"))!;
+    const root = { string: Number(m[1]), fret: Number(m[2]) };
+
+    const shapes: ChordShape[] = [];
+    for (const inv of [0, 1, 2]) {
+      shapes.push(...catalogChordShapes(tuning, "triad", quality, root, inv));
+    }
+    const picked = shapes[0];
+    for (const p of picked.positions) {
+      if (p.string === root.string && p.fret === root.fret) continue;
+      clickCell(p);
+    }
+
+    const fb = text("#feedback");
+    expect(fb).toContain("正解");
+    expect(fb).toContain(`${["基本形", "第1転回", "第2転回"][picked.inversion]}でした`);
+
+    // 連続出題が OFF なら、続きの小問が無いので残りの転回形は出さない
+    expect(fb).not.toContain("残りは");
+    expect(text("#question-sub")).not.toContain("残りの転回形");
+  });
+
+  it("連続出題では、回答後も残りの転回形が専用のバッジに表示され続ける", () => {
+    invChips()[1].click();
+    invChips()[2].click();
+    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+    onlyRootString("4弦");
+
+    // 補足行から現在の問題を復元し、候補のシェイプで答える
+    const name = text("#question-note").trim();
+    const quality = [...CHORD_QUALITIES]
+      .sort((a, b) => b.symbol.length - a.symbol.length)
+      .find((q) => q.symbol === "" || name.endsWith(q.symbol))!;
+    const m = /ルート (\d)弦 (\d+)フレット/.exec(text("#question-sub"))!;
+    const root = { string: Number(m[1]), fret: Number(m[2]) };
+
+    const shapes: ChordShape[] = [];
+    for (const inv of [0, 1, 2]) {
+      shapes.push(...catalogChordShapes(tuning, "triad", quality, root, inv));
+    }
+    const picked = shapes[0];
+    for (const p of picked.positions) {
+      if (p.string === root.string && p.fret === root.fret) continue;
+      clickCell(p);
+    }
+    expect(text("#feedback")).toContain("正解");
+
+    const rest = [...new Set(shapes.map((s) => s.inversion))]
+      .filter((i) => i !== picked.inversion)
+      .sort((a, b) => a - b);
+    const hint = text("#inversion-hint");
+    if (rest.length > 0) {
+      expect(text("#feedback")).toContain("残りは");
+      expect(hint).toContain("次に押さえるのは");
+      for (const i of rest) expect(hint).toContain(["基本形", "第1転回", "第2転回"][i]);
+    } else {
+      expect(hint).toContain("すべて回答済み");
+    }
+  });
+
+  it("連続出題では、出題時から押さえる転回形がバッジに出る", () => {
+    invChips()[1].click();
+    invChips()[2].click();
+    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
+    box.checked = true;
+    box.dispatchEvent(new window.Event("change"));
+    onlyRootString("4弦");
+
+    expect(text("#inversion-hint")).toContain("押さえるのは");
+
+    // 連続出題を OFF に戻すとバッジは消える
+    box.checked = false;
+    box.dispatchEvent(new window.Event("change"));
+    expect(text("#inversion-hint")).toBe("");
   });
 });

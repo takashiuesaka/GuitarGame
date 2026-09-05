@@ -17,6 +17,7 @@ import { midiAt, type Position } from "./core/fretboard";
 import { noteName, type AccidentalStyle, type NotationMode } from "./core/notes";
 import { getTuning, TUNINGS, type Tuning } from "./core/tuning";
 import { catalogQualities } from "./core/catalogShapes";
+import { INVERSION_LABELS } from "./core/chordCatalog";
 import { ChordQuiz } from "./ui/ChordQuiz";
 import { DegreeQuiz, ROOT_MAX_FRET, type AnswerScope, type RootMode } from "./ui/DegreeQuiz";
 import { Fretboard, type Marker } from "./ui/Fretboard";
@@ -43,6 +44,8 @@ interface Settings {
   chordVoicing: VoicingType;
   chordQualityIds: string[];
   chordRootStrings: number[];
+  chordInversions: number[];
+  chordAskAllInversions: boolean;
   chordShowRoot: boolean;
   showAllNames: boolean;
   autoNext: boolean;
@@ -68,6 +71,8 @@ function loadSettings(): Settings {
     chordVoicing: "triad",
     chordQualityIds: ["major", "minor"],
     chordRootStrings: [6, 5],
+    chordInversions: [0],
+    chordAskAllInversions: false,
     chordShowRoot: true,
     showAllNames: false,
     autoNext: true,
@@ -198,6 +203,14 @@ app.innerHTML = `
         <div class="chip-picker" id="chord-qualities"></div>
       </div>
       <div class="control mode-chord">
+        <span>転回形</span>
+        <div class="chip-picker" id="chord-inversions"></div>
+      </div>
+      <label class="control checkbox mode-chord">
+        <input type="checkbox" id="chord-ask-all-inversions" />
+        <span>選んだ転回形を連続で出題する</span>
+      </label>
+      <div class="control mode-chord">
         <span>ルート弦</span>
         <div class="chip-picker" id="chord-root-strings"></div>
       </div>
@@ -238,6 +251,7 @@ app.innerHTML = `
       <p class="question-label" id="question-label">この音はどこ？</p>
       <p class="question-note" id="question-note">-</p>
       <p class="question-sub" id="question-sub"></p>
+      <p class="inversion-hint" id="inversion-hint"></p>
     </div>
     <div class="feedback" id="feedback"></div>
     <div class="actions">
@@ -278,6 +292,8 @@ const rootPosStringSelect = $<HTMLSelectElement>("#root-pos-string");
 const rootPosFretSelect = $<HTMLSelectElement>("#root-pos-fret");
 const chordVoicingSelect = $<HTMLSelectElement>("#chord-voicing");
 const chordQualitiesBox = $<HTMLDivElement>("#chord-qualities");
+const chordInversionsBox = $<HTMLDivElement>("#chord-inversions");
+const chordAskAllInversionsInput = $<HTMLInputElement>("#chord-ask-all-inversions");
 const chordRootStringsBox = $<HTMLDivElement>("#chord-root-strings");
 const chordShowRootCheckbox = $<HTMLInputElement>("#chord-show-root");
 const clearSelectionButton = $<HTMLButtonElement>("#clear-selection");
@@ -292,6 +308,7 @@ const showNamesLabel = $<HTMLSpanElement>("#show-names-label");
 const questionLabel = $<HTMLParagraphElement>("#question-label");
 const questionNote = $<HTMLParagraphElement>("#question-note");
 const questionSub = $<HTMLParagraphElement>("#question-sub");
+const inversionHint = $<HTMLParagraphElement>("#inversion-hint");
 const feedback = $<HTMLDivElement>("#feedback");
 const nextButton = $<HTMLButtonElement>("#next");
 const resetButton = $<HTMLButtonElement>("#reset");
@@ -366,8 +383,21 @@ const chordQuiz = new ChordQuiz(tuning, {
   voicing: settings.chordVoicing,
   qualityIds: settings.chordQualityIds,
   rootStrings: settings.chordRootStrings,
+  inversions: settings.chordInversions,
+  askAllInversions: settings.chordAskAllInversions,
   showRoot: settings.chordShowRoot,
 });
+
+/** コードクイズの設定をまとめて反映する */
+function applyChordConfig(): void {
+  chordQuiz.setConfig({
+    voicing: settings.chordVoicing,
+    qualityIds: settings.chordQualityIds,
+    rootStrings: settings.chordRootStrings,
+    inversions: settings.chordInversions,
+    askAllInversions: settings.chordAskAllInversions,
+  });
+}
 
 const fretboard = new Fretboard({
   tuning,
@@ -455,13 +485,48 @@ function buildChordChips(): void {
       settings.chordQualityIds = qualities.filter((x) => next.has(x.id)).map((x) => x.id);
       saveSettings(settings);
       buildChordChips();
-      chordQuiz.setConfig({ qualityIds: settings.chordQualityIds });
+      applyChordConfig();
       nextQuestion();
     });
     chordQualitiesBox.appendChild(btn);
   }
 
-  const rootStrings = ChordQuiz.availableRootStrings(voicing, tuning);
+  // 転回形は「選んだコードの種類で作れるもの」だけ並べる
+  const inversions = ChordQuiz.availableInversions(voicing, tuning, settings.chordQualityIds);
+  const validInversions = settings.chordInversions.filter((i) => inversions.includes(i));
+  settings.chordInversions =
+    validInversions.length > 0 ? validInversions : inversions.slice(0, 1);
+
+  chordInversionsBox.replaceChildren();
+  for (const inv of inversions) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chip";
+    btn.dataset.id = String(inv);
+    btn.textContent = INVERSION_LABELS[inv] ?? `第${inv}転回`;
+    btn.classList.toggle("active", settings.chordInversions.includes(inv));
+    btn.addEventListener("click", () => {
+      const next = new Set(settings.chordInversions);
+      if (next.has(inv)) {
+        if (next.size <= 1) return;
+        next.delete(inv);
+      } else {
+        next.add(inv);
+      }
+      settings.chordInversions = inversions.filter((x) => next.has(x));
+      saveSettings(settings);
+      buildChordChips();
+      applyChordConfig();
+      nextQuestion();
+    });
+    chordInversionsBox.appendChild(btn);
+  }
+  // 転回形が1つしか選べないなら、連続出題の設定は意味がない
+  chordAskAllInversionsInput.checked = settings.chordAskAllInversions;
+  chordAskAllInversionsInput.disabled = inversions.length <= 1;
+
+  // 基本形はどの弦セットでも最低音弦がルートなので、選んだ転回形で使える弦だけを並べる
+  const rootStrings = ChordQuiz.availableRootStrings(voicing, tuning, settings.chordInversions);
   const validRoots = settings.chordRootStrings.filter((s) => rootStrings.includes(s));
   settings.chordRootStrings = validRoots.length > 0 ? validRoots : [rootStrings[0]];
 
@@ -484,7 +549,7 @@ function buildChordChips(): void {
       settings.chordRootStrings = rootStrings.filter((x) => next.has(x));
       saveSettings(settings);
       buildChordChips();
-      chordQuiz.setConfig({ rootStrings: settings.chordRootStrings });
+      applyChordConfig();
       nextQuestion();
     });
     chordRootStringsBox.appendChild(btn);
@@ -527,9 +592,47 @@ function renderChordSelection(): void {
   updateChordSub();
 }
 
+/** 転回形の表示名 */
+const inversionLabel = (i: number): string => INVERSION_LABELS[i] ?? `第${i}転回`;
+const inversionList = (list: number[]): string => list.map(inversionLabel).join("・");
+
+/** 連続出題中に、次に押さえる転回形をバッジで示す */
+function updateInversionHint(): void {
+  if (!isChordMode() || !chordQuiz.askAllInversions || chordQuiz.inversions.length <= 1) {
+    inversionHint.textContent = "";
+    inversionHint.className = "inversion-hint";
+    return;
+  }
+  const rest = chordQuiz.state.inversions;
+  if (rest.length === 0) {
+    inversionHint.textContent = "🎉 この弦の転回形はすべて回答済み";
+    inversionHint.className = "inversion-hint done";
+    return;
+  }
+  const label = inversionList(rest);
+  inversionHint.textContent = chordQuiz.isAnswered
+    ? `次に押さえるのは ${label}`
+    : rest.length > 1
+      ? `押さえるのは ${label} のどれでもOK`
+      : `押さえるのは ${label}`;
+  inversionHint.className = "inversion-hint";
+}
+
 function updateChordSub(): void {
   const s = chordQuiz.state;
   const parts: string[] = [getVoicing(chordQuiz.voicing).label];
+  const multiInversion = chordQuiz.inversions.length > 1;
+  const serial = chordQuiz.askAllInversions && multiInversion;
+  // 連続出題中は専用のバッジで目立たせ、それ以外は補足行に控えめに出す
+  if (!serial && !chordQuiz.isAnswered) {
+    if (s.inversions.length > 1) {
+      parts.push(`転回形 ${s.inversions.length}種（${inversionList(s.inversions)}）のどれでも`);
+    } else if (multiInversion || s.inversions[0] !== 0) {
+      // 基本形だけを出題しているときは冗長なので出さない
+      parts.push(inversionLabel(s.inversions[0]));
+    }
+  }
+  updateInversionHint();
   parts.push(
     s.stepCount > 1
       ? `${s.step.rootString}弦ルート（${s.stepIndex + 1}/${s.stepCount}）`
@@ -611,7 +714,18 @@ function judgeChord(): void {
   updateChordSub();
 
   if (result.correct) {
-    feedback.textContent = result.isLastStep ? "正解！ 🎉" : "正解！ 🎉 次のルート弦へ";
+    const done: string[] = ["正解！ 🎉"];
+    // どの転回形だったかを示してから、まだ答えていない転回形を伝える
+    if (chordQuiz.inversions.length > 1 || shape.inversion !== 0) {
+      done.push(`${inversionLabel(shape.inversion)}でした`);
+    }
+    if (chordQuiz.askAllInversions && result.remainingInversions.length > 0) {
+      done.push(`残りは ${inversionList(result.remainingInversions)}`);
+    }
+    if (!result.isLastStep) {
+      done.push(chordQuiz.nextStepIsSameRootString ? "次の転回形へ" : "次のルート弦へ");
+    }
+    feedback.textContent = done.join(" ／ ");
     feedback.className = "feedback correct";
     synth.playSequence(
       shape.positions.map((p) => midiAt(tuning, p)),
@@ -629,7 +743,9 @@ function judgeChord(): void {
   } else {
     feedback.textContent = result.isLastStep
       ? "残念… 緑が正しいシェイプです。"
-      : "残念… 緑が正しいシェイプです。次のルート弦も答えましょう。";
+      : chordQuiz.nextStepIsSameRootString
+        ? "残念… 緑が正しいシェイプです。次の転回形も答えましょう。"
+        : "残念… 緑が正しいシェイプです。次のルート弦も答えましょう。";
     feedback.className = "feedback wrong";
     answerSoundTimer = window.setTimeout(() => {
       answerSoundTimer = null;
@@ -756,6 +872,7 @@ function refreshBoard(): void {
 
 function updateQuestion(): void {
   updateNextButtonLabel();
+  updateInversionHint();
   if (isChordMode()) {
     const s = chordQuiz.state;
     questionLabel.textContent = chordQuiz.showRoot
@@ -829,11 +946,14 @@ chordVoicingSelect.addEventListener("change", () => {
   settings.chordVoicing = chordVoicingSelect.value as VoicingType;
   buildChordChips();
   saveSettings(settings);
-  chordQuiz.setConfig({
-    voicing: settings.chordVoicing,
-    qualityIds: settings.chordQualityIds,
-    rootStrings: settings.chordRootStrings,
-  });
+  applyChordConfig();
+  nextQuestion();
+});
+
+chordAskAllInversionsInput.addEventListener("change", () => {
+  settings.chordAskAllInversions = chordAskAllInversionsInput.checked;
+  saveSettings(settings);
+  applyChordConfig();
   nextQuestion();
 });
 
@@ -964,7 +1084,7 @@ tuningSelect.addEventListener("change", () => {
   fretboard.setTuning(tuning);
   // チューニングによって使えるルート弦が変わる（例: ドロップDでは6弦ルートの定番形が無い）
   buildChordChips();
-  chordQuiz.setConfig({ rootStrings: settings.chordRootStrings });
+  applyChordConfig();
   nextQuestion();
 });
 

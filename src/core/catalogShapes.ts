@@ -100,16 +100,44 @@ export function catalogQualities(voicing: VoicingType): ChordQuality[] {
   return CHORD_QUALITIES.filter((q) => ids.has(q.id));
 }
 
-/** そのボイシングで使えるルート弦（カタログにあるものだけ）。低音弦から順 */
-export function catalogRootStrings(voicing: VoicingType, tuning: Tuning): number[] {
+/**
+ * そのボイシングで使えるルート弦（カタログにあるものだけ）。低音弦から順。
+ * 転回形を指定すると、その転回形で作れる弦だけに絞られる。
+ * 基本形はどの弦セットでも最低音弦がルートなので、高音弦ルートは転回形でしか現れない。
+ */
+export function catalogRootStrings(
+  voicing: VoicingType,
+  tuning: Tuning,
+  inversions?: number[],
+): number[] {
   const strings = new Set<number>();
   for (const shape of CHORD_CATALOG) {
     if (catalogVoicing(shape) !== voicing) continue;
     if (!isShapeValidIn(shape, tuning)) continue;
-    const rootString = analyzeCatalogShape(shape).rootString;
-    if (rootString !== null) strings.add(rootString);
+    const analysis = analyzeCatalogShape(shape);
+    if (inversions && !inversions.includes(analysis.inversion)) continue;
+    if (analysis.rootString !== null) strings.add(analysis.rootString);
   }
   return [...strings].sort((a, b) => b - a);
+}
+
+/**
+ * そのボイシングでカタログに存在する転回形（0=基本形）。小さい順。
+ * コードの種類やルート弦を絞ると、ここより少なくなることがある。
+ */
+export function catalogInversions(
+  voicing: VoicingType,
+  tuning: Tuning,
+  qualityIds?: string[],
+): number[] {
+  const inversions = new Set<number>();
+  for (const shape of CHORD_CATALOG) {
+    if (catalogVoicing(shape) !== voicing) continue;
+    if (qualityIds && !qualityIds.includes(shape.qualityId)) continue;
+    if (!isShapeValidIn(shape, tuning)) continue;
+    inversions.add(analyzeCatalogShape(shape).inversion);
+  }
+  return [...inversions].sort((a, b) => a - b);
 }
 
 /** そのボイシング・ルート弦の組み合わせがカタログに存在するか */
@@ -161,6 +189,7 @@ function toChordShape(
     positions,
     intervals: positions.map((p) => midiAt(tuning, p) - rootMidi),
     rootIndex,
+    inversion: analysis.inversion,
     fingers: fingerCount(positions),
     omits: entry.omits ?? [],
     catalogId: entry.id,
@@ -177,6 +206,7 @@ export function catalogChordShapes(
   voicing: VoicingType,
   quality: ChordQuality,
   root: Position,
+  inversion?: number,
 ): ChordShape[] {
   const shapes: { shape: ChordShape; entry: CatalogShape }[] = [];
 
@@ -184,7 +214,9 @@ export function catalogChordShapes(
     if (entry.qualityId !== quality.id) continue;
     if (catalogVoicing(entry) !== voicing) continue;
     const shape = toChordShape(entry, tuning, quality, root);
-    if (shape) shapes.push({ shape, entry });
+    if (!shape) continue;
+    if (inversion !== undefined && shape.inversion !== inversion) continue;
+    shapes.push({ shape, entry });
   }
 
   const spread = (s: ChordShape): number =>
@@ -192,7 +224,7 @@ export function catalogChordShapes(
 
   shapes.sort(
     (a, b) =>
-      a.shape.rootIndex - b.shape.rootIndex ||
+      a.shape.inversion - b.shape.inversion ||
       FAMILY_PRIORITY[a.entry.family] - FAMILY_PRIORITY[b.entry.family] ||
       b.shape.positions.length - a.shape.positions.length ||
       spread(a.shape) - spread(b.shape),

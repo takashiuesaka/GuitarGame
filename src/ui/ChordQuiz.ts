@@ -1,5 +1,6 @@
 import {
   catalogChordShapes,
+  catalogInversions,
   catalogQualities,
   catalogRootStrings,
 } from "../core/catalogShapes";
@@ -26,15 +27,24 @@ export interface ChordQuizConfig {
   voicing: VoicingType;
   qualityIds: string[];
   rootStrings: number[];
+  /** 出題する転回形（0=基本形）。既定は基本形のみ */
+  inversions: number[];
+  /**
+   * 転回形を複数選んだときの出題のしかた。
+   * true なら選んだ転回形をすべて連続で出題し、false なら1問ごとに1つだけ選ぶ。
+   */
+  askAllInversions: boolean;
   /** ルートをあらかじめ指板に表示するか */
   showRoot: boolean;
 }
 
-/** 1つのコードに対する、ルート弦ごとの小問 */
+/** 1つのコードに対する、ルート弦ごと（連続出題時は転回形の数だけ繰り返す）の小問 */
 export interface ChordStep {
   rootString: number;
+  /** この小問で答えられる転回形の候補。回答済みのものを除く前の全候補 */
+  inversions: number[];
   root: Position;
-  /** 正解として受理するシェイプ（展開形を含む） */
+  /** 正解として受理するシェイプ（候補の全転回形を含む） */
   shapes: ChordShape[];
   /** 表示用の代表シェイプ */
   shape: ChordShape;
@@ -43,7 +53,7 @@ export interface ChordStep {
 export interface ChordQuestion {
   quality: ChordQuality;
   rootPitchClass: PitchClass;
-  /** 選択されたルート弦ごとの小問。低音弦から順に並ぶ */
+  /** 小問。ルート弦は低音弦から順。連続出題時は同じ弦が転回形の数だけ続く */
   steps: ChordStep[];
 }
 
@@ -53,6 +63,8 @@ export interface ChordJudgement {
   wrong: Position[];
   /** 判定に用いたシェイプ（正解ならユーザーが押さえたもの、不正解なら最も近いもの） */
   shape: ChordShape;
+  /** 正解したときに、まだ答えていない転回形 */
+  remainingInversions: number[];
   /** この小問が最後かどうか */
   isLastStep: boolean;
 }
@@ -65,8 +77,12 @@ export interface ChordQuizState {
   stepCount: number;
   /** 現在の小問の代表シェイプ */
   shape: ChordShape;
-  /** 現在の小問で正解となるシェイプ一覧 */
+  /** 現在の小問で正解となるシェイプ一覧（回答済みの転回形は除く） */
   shapes: ChordShape[];
+  /** 現在の小問で答えられる転回形（回答済みを除く）。小さい順 */
+  inversions: number[];
+  /** この小問より前に、同じルート弦で答え終えた転回形 */
+  answeredInversions: number[];
   selected: Position[];
   /** 最低音数まであと何音クリックする必要があるか */
   remaining: number;
@@ -91,6 +107,8 @@ export class ChordQuiz {
   private combo = 0;
   private bestCombo = 0;
   private answered = false;
+  /** 同じルート弦の中で、すでに答え終えた転回形 */
+  private answeredInversions: number[] = [];
 
   constructor(tuning: Tuning, config: Partial<ChordQuizConfig> = {}) {
     this.tuning = tuning;
@@ -101,21 +119,47 @@ export class ChordQuiz {
   private normalize(config: Partial<ChordQuizConfig>): ChordQuizConfig {
     const voicing = config.voicing ?? "triad";
     const available = catalogQualities(voicing).map((q) => q.id);
-    const qualityIds = (config.qualityIds ?? []).filter((id) => available.includes(id));
-    const usable = ChordQuiz.availableRootStrings(voicing, this.tuning);
+    const picked = (config.qualityIds ?? []).filter((id) => available.includes(id));
+    const qualityIds = picked.length > 0 ? picked : available.slice(0, 2);
+
+    // 選んだコードの種類で作れる転回形だけを残す
+    const usableInversions = ChordQuiz.availableInversions(voicing, this.tuning, qualityIds);
+    const pickedInversions = (config.inversions ?? [0]).filter((i) => usableInversions.includes(i));
+    const inversions =
+      pickedInversions.length > 0
+        ? [...new Set(pickedInversions)].sort((a, b) => a - b)
+        : usableInversions.slice(0, 1);
+
+    // ルート弦は転回形に依存する（基本形は最低音弦ルートだけ）
+    const usable = ChordQuiz.availableRootStrings(voicing, this.tuning, inversions);
     const rootStrings = (config.rootStrings ?? usable).filter((s) => usable.includes(s));
 
     return {
       voicing,
-      qualityIds: qualityIds.length > 0 ? qualityIds : available.slice(0, 2),
+      qualityIds,
       rootStrings: rootStrings.length > 0 ? [...new Set(rootStrings)].sort((a, b) => b - a) : usable,
+      inversions,
+      askAllInversions: config.askAllInversions ?? false,
       showRoot: config.showRoot ?? true,
     };
   }
 
+  /** そのボイシングで出題できる転回形（カタログに定番フォームがあるものだけ） */
+  static availableInversions(
+    voicing: VoicingType,
+    tuning: Tuning,
+    qualityIds?: string[],
+  ): number[] {
+    return catalogInversions(voicing, tuning, qualityIds);
+  }
+
   /** そのボイシングで使えるルート弦（カタログに定番フォームがあるものだけ） */
-  static availableRootStrings(voicing: VoicingType, tuning: Tuning): number[] {
-    const usable = catalogRootStrings(voicing, tuning);
+  static availableRootStrings(
+    voicing: VoicingType,
+    tuning: Tuning,
+    inversions?: number[],
+  ): number[] {
+    const usable = catalogRootStrings(voicing, tuning, inversions);
     return CHORD_ROOT_STRINGS.filter((s) => usable.includes(s));
   }
 
@@ -124,7 +168,11 @@ export class ChordQuiz {
     return list.length > 0 ? list : catalogQualities(this.config.voicing).slice(0, 1);
   }
 
-  /** ルート弦1本ぶんの小問を作る。作れなければ null */
+
+  /**
+   * ルート弦1本ぶんの小問を作る。作れなければ null。
+   * 選んだ転回形のうち、そのルート弦で作れるものすべてを正解候補にする。
+   */
   private buildStep(
     quality: ChordQuality,
     rootPitchClass: PitchClass,
@@ -133,17 +181,31 @@ export class ChordQuiz {
     for (let fret = 0; fret <= CHORD_ROOT_FALLBACK_FRET; fret++) {
       const root: Position = { string: rootString, fret };
       if (pitchClassAt(this.tuning, root) !== rootPitchClass) continue;
-      const shapes = catalogChordShapes(this.tuning, this.config.voicing, quality, root);
-      if (shapes.length > 0) return { rootString, root, shapes, shape: shapes[0] };
+
+      const shapes: ChordShape[] = [];
+      for (const inv of this.config.inversions) {
+        shapes.push(...catalogChordShapes(this.tuning, this.config.voicing, quality, root, inv));
+      }
+      if (shapes.length === 0) continue;
+
+      const inversions = [...new Set(shapes.map((s) => s.inversion))].sort((a, b) => a - b);
+      return { rootString, inversions, root, shapes, shape: shapes[0] };
     }
     return null;
   }
 
+  /**
+   * 小問を並べる。ルート弦は低音弦から順。
+   * 連続出題が ON のときは、同じルート弦をその弦で作れる転回形の数だけ繰り返す
+   * （2問目以降はまだ答えていない転回形が正解になる）。
+   */
   private buildSteps(quality: ChordQuality, rootPitchClass: PitchClass): ChordStep[] {
     const steps: ChordStep[] = [];
     for (const s of this.config.rootStrings) {
       const step = this.buildStep(quality, rootPitchClass, s);
-      if (step) steps.push(step);
+      if (!step) continue;
+      const repeat = this.config.askAllInversions ? step.inversions.length : 1;
+      for (let i = 0; i < repeat; i++) steps.push(step);
     }
     return steps;
   }
@@ -154,12 +216,12 @@ export class ChordQuiz {
    */
   private pickQuestion(previous?: ChordQuestion): ChordQuestion {
     const qualities = this.qualities();
-    const wanted = this.config.rootStrings.length;
     let fallback: ChordQuestion | null = null;
 
     for (let attempt = 0; attempt < 200; attempt++) {
       const quality = qualities[Math.floor(Math.random() * qualities.length)];
       const rootPitchClass = Math.floor(Math.random() * 12) as PitchClass;
+      const wanted = this.config.rootStrings.length;
       if (
         previous &&
         previous.quality.id === quality.id &&
@@ -170,8 +232,12 @@ export class ChordQuiz {
       const steps = this.buildSteps(quality, rootPitchClass);
       if (steps.length === 0) continue;
       const question = { quality, rootPitchClass, steps };
-      if (steps.length === wanted) return question;
-      if (!fallback || steps.length > fallback.steps.length) fallback = question;
+      // 連続出題ではステップが増えるので、カバーできたルート弦の本数で比べる
+      const covered = new Set(steps.map((s) => s.rootString)).size;
+      if (covered === wanted) return question;
+      if (!fallback || covered > new Set(fallback.steps.map((s) => s.rootString)).size) {
+        fallback = question;
+      }
     }
 
     if (fallback) return fallback;
@@ -193,6 +259,19 @@ export class ChordQuiz {
     return this.question.steps[this.stepIndex];
   }
 
+  /** 現在の小問で正解になるシェイプ。同じルート弦で答え済みの転回形は除く */
+  private get activeShapes(): ChordShape[] {
+    const rest = this.step.shapes.filter(
+      (s) => !this.answeredInversions.includes(s.inversion),
+    );
+    return rest.length > 0 ? rest : this.step.shapes;
+  }
+
+  /** 現在の小問で答えられる転回形 */
+  private get activeInversions(): number[] {
+    return [...new Set(this.activeShapes.map((s) => s.inversion))].sort((a, b) => a - b);
+  }
+
   get state(): ChordQuizState {
     const step = this.step;
     return {
@@ -201,8 +280,10 @@ export class ChordQuiz {
       step,
       stepIndex: this.stepIndex,
       stepCount: this.question.steps.length,
-      shape: step.shape,
-      shapes: step.shapes,
+      shape: this.activeShapes[0],
+      shapes: this.activeShapes,
+      inversions: this.activeInversions,
+      answeredInversions: [...this.answeredInversions],
       selected: [...this.selected],
       remaining: Math.max(0, this.minCount() - this.selected.length),
       canAnswer: this.canAnswer,
@@ -225,14 +306,30 @@ export class ChordQuiz {
     return this.config.voicing;
   }
 
-  /** まだ回答していないルート弦が残っているか */
+  /** 出題対象として選ばれている転回形 */
+  get inversions(): number[] {
+    return [...this.config.inversions];
+  }
+
+  /** 選んだ転回形を連続で出題する設定か */
+  get askAllInversions(): boolean {
+    return this.config.askAllInversions;
+  }
+
+  /** まだ回答していない小問が残っているか */
   get hasNextStep(): boolean {
     return this.stepIndex < this.question.steps.length - 1;
   }
 
+  /** 次の小問が同じルート弦か（＝別の転回形を続けて答えるか） */
+  get nextStepIsSameRootString(): boolean {
+    if (!this.hasNextStep) return false;
+    return this.question.steps[this.stepIndex + 1].rootString === this.step.rootString;
+  }
+
   /** ユーザーがクリックすべき最低音数（正解シェイプのうち最も音数の少ないもの） */
   minCount(): number {
-    const shapes = this.step.shapes;
+    const shapes = this.activeShapes;
     const total =
       shapes.length > 0
         ? Math.min(...shapes.map((s) => s.positions.length))
@@ -253,7 +350,7 @@ export class ChordQuiz {
   /** 現在の選択が正解シェイプのいずれかと一致しているか */
   private matchedShape(): ChordShape | null {
     const answer = this.config.showRoot ? [this.step.root, ...this.selected] : [...this.selected];
-    return this.step.shapes.find((s) => samePositionSet(answer, s.positions)) ?? null;
+    return this.activeShapes.find((s) => samePositionSet(answer, s.positions)) ?? null;
   }
 
   setTuning(tuning: Tuning): void {
@@ -271,6 +368,7 @@ export class ChordQuiz {
   private restart(): void {
     this.selected = [];
     this.answered = false;
+    this.answeredInversions = [];
     this.stepIndex = 0;
     this.question = this.pickQuestion();
   }
@@ -307,9 +405,10 @@ export class ChordQuiz {
   /** ユーザーの選択に最も近いシェイプ（不正解時の答え合わせ用） */
   private closestShape(): ChordShape {
     const chosen = new Set(this.selected.map(key));
-    let best = this.step.shape;
+    const shapes = this.activeShapes;
+    let best = shapes[0];
     let bestScore = -1;
-    for (const shape of this.step.shapes) {
+    for (const shape of shapes) {
       const score = shape.positions.filter((p) => chosen.has(key(p))).length;
       if (score > bestScore) {
         bestScore = score;
@@ -335,12 +434,19 @@ export class ChordQuiz {
         this.correct += 1;
         this.combo += 1;
         this.bestCombo = Math.max(this.bestCombo, this.combo);
+        // 連続出題では、次の小問で同じ転回形を答えられないようにする
+        if (!this.answeredInversions.includes(shape.inversion)) {
+          this.answeredInversions.push(shape.inversion);
+        }
       } else {
         this.combo = 0;
       }
     }
 
-    return { correct, wrong, shape, isLastStep: !this.hasNextStep };
+    const remainingInversions = this.step.inversions.filter(
+      (i) => !this.answeredInversions.includes(i),
+    );
+    return { correct, wrong, shape, isLastStep: !this.hasNextStep, remainingInversions };
   }
 
   /** 選択をすべて解除する */
@@ -358,12 +464,16 @@ export class ChordQuiz {
     this.selected = [];
     this.answered = false;
     if (this.hasNextStep) {
+      const previousString = this.step.rootString;
       this.stepIndex += 1;
+      // ルート弦が変わったら、答え済みの転回形はリセットする
+      if (this.step.rootString !== previousString) this.answeredInversions = [];
       return;
     }
     const previous = this.question;
     this.question = this.pickQuestion(previous);
     this.stepIndex = 0;
+    this.answeredInversions = [];
   }
 
   reset(): void {

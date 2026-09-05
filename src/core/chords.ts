@@ -87,6 +87,8 @@ export interface ChordShape {
   intervals: number[];
   /** positions の中でルートが何番目か。0 ならルートが最低音 */
   rootIndex: number;
+  /** 最低音の度数を基準にした転回番号。0=基本形 / 1=第1転回 / … */
+  inversion: number;
   /** 押さえるのに必要な指の本数（開放弦は 0 本、セーハは 1 本） */
   fingers: number;
   /** 意図的に省略している構成音（ルートからの半音距離）。通常は5度 */

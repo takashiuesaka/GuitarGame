@@ -258,23 +258,36 @@ describe("[S-CHORD-04] ルート弦の選択", () => {
     const quiz = new ChordQuiz(tuning, {
       voicing: "triad",
       qualityIds: ["major", "minor"],
+      inversions: [0, 1, 2],
+      askAllInversions: true,
       rootStrings: [4, 6, 2],
     });
-    const s = quiz.state;
-    expect(s.stepCount).toBe(3);
-    expect(s.step.rootString).toBe(6);
-    quiz.next();
-    expect(quiz.state.step.rootString).toBe(4);
-    quiz.next();
-    expect(quiz.state.step.rootString).toBe(2);
+    // 連続出題では同じルート弦が転回形の数だけ続く。弦は低音弦から順に並ぶ
+    const order: number[] = [];
+    const count = quiz.state.stepCount;
+    for (let i = 0; i < count; i++) {
+      order.push(quiz.state.step.rootString);
+      quiz.next();
+    }
+    expect([...new Set(order)]).toEqual([6, 4, 2]);
+    // 同じ弦がまとまっている（一度離れた弦に戻らない）
+    const changes = order.filter((v, i) => i > 0 && v !== order[i - 1]).length;
+    expect(changes).toBe(new Set(order).size - 1);
   });
 
-  it("1弦・2弦・3弦ルートでも出題できる", () => {
+  it("基本形はどの弦セットでも最低音弦がルートなので、高音弦ルートは選べない", () => {
+    expect(ChordQuiz.availableRootStrings("triad", tuning, [0])).toEqual([6, 5, 4, 3]);
+    expect(ChordQuiz.availableRootStrings("seventh", tuning, [0])).toEqual([6, 5, 4]);
+  });
+
+  it("1弦・2弦・3弦ルートでも出題できる（転回形を選べば）", () => {
     for (const voicing of ["triad", "seventh"] as VoicingType[]) {
+      const inversions = ChordQuiz.availableInversions(voicing, tuning);
       for (const s of [3, 2, 1]) {
         const quiz = new ChordQuiz(tuning, {
           voicing,
           qualityIds: catalogQualities(voicing).map((q) => q.id),
+          inversions,
           rootStrings: [s],
         });
         expect(quiz.state.step.rootString, `${voicing}/${s}弦`).toBe(s);
@@ -382,14 +395,13 @@ describe("[S-CHORD-07] コードシェイプクイズの判定", () => {
     try {
       const make = () =>
         new ChordQuiz(tuning, {
-          voicing: "triad",
+          voicing: "form",
           qualityIds: ["major"],
           rootStrings: [5],
           showRoot: true,
         });
       const shapes = make().state.shapes;
       expect(shapes.length).toBeGreaterThan(1);
-      expect(shapes.some((s) => s.rootIndex > 0)).toBe(true);
 
       for (const shape of shapes) {
         const quiz = make();
@@ -580,6 +592,190 @@ describe("[S-CHORD-05] クイズが出すシェイプは常に押弦可能", () 
         }
       }
       quiz.next();
+    }
+  });
+});
+
+describe("[S-CHORD-10] 転回形の選択", () => {
+  /** 現在の小問に、指定したシェイプで回答する */
+  const answer = (quiz: ChordQuiz, shape = quiz.state.shape) => {
+    for (const p of shape.positions) {
+      if (!quiz.isGivenRoot(p)) quiz.toggle(p);
+    }
+    return quiz.judge();
+  };
+
+  it("選べる転回形はボイシングごとに違う", () => {
+    expect(ChordQuiz.availableInversions("triad", tuning)).toEqual([0, 1, 2]);
+    expect(ChordQuiz.availableInversions("seventh", tuning)).toEqual([0, 1, 2, 3]);
+    expect(ChordQuiz.availableInversions("guide", tuning)).toEqual([0]);
+  });
+
+  it("既定は基本形のみ", () => {
+    const quiz = new ChordQuiz(tuning, { voicing: "triad", qualityIds: ["major"] });
+    expect(quiz.inversions).toEqual([0]);
+    expect(quiz.state.inversions).toEqual([0]);
+  });
+
+  it("選んだ転回形以外は出題されない", () => {
+    for (const inv of [0, 1, 2]) {
+      const quiz = new ChordQuiz(tuning, {
+        voicing: "triad",
+        qualityIds: ["major", "minor"],
+        inversions: [inv],
+        rootStrings: ChordQuiz.availableRootStrings("triad", tuning, [inv]),
+      });
+      for (let i = 0; i < 20; i++) {
+        const s = quiz.state;
+        expect(s.inversions, `第${inv}転回`).toEqual([inv]);
+        for (const shape of s.shapes) expect(shape.inversion).toBe(inv);
+        quiz.next();
+      }
+    }
+  });
+
+  it("そのコードで作れない転回形は選択肢から外れる", () => {
+    // 開放・バレーコードは基本形しかない
+    expect(ChordQuiz.availableInversions("form", tuning, ["dom7"])).toEqual([0]);
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "form",
+      qualityIds: ["dom7"],
+      inversions: [1, 2],
+    });
+    expect(quiz.inversions).toEqual([0]);
+  });
+
+  it("複数選んだときは、どの転回形で答えても正解になる", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major"],
+      inversions: [0, 1, 2],
+      rootStrings: [4],
+      showRoot: true,
+    });
+
+    // 候補のどれを選んでも正解になる。出題を繰り返せば3種類すべてが現れる
+    const answered = new Set<number>();
+    for (let i = 0; i < 60; i++) {
+      const shapes = quiz.state.shapes;
+      const shape = shapes[i % shapes.length];
+      const result = answer(quiz, shape);
+      expect(result.correct, `第${shape.inversion}転回`).toBe(true);
+      expect(result.shape.inversion).toBe(shape.inversion);
+      answered.add(shape.inversion);
+      quiz.next();
+    }
+    expect([...answered].sort()).toEqual([0, 1, 2]);
+  });
+
+  it("正解すると、残りの転回形が分かる", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major"],
+      inversions: [0, 1, 2],
+      askAllInversions: true,
+      rootStrings: [4],
+      showRoot: true,
+    });
+    // ルート位置によっては転回形が1つしか作れないので、複数ある問題まで送る
+    for (let i = 0; i < 50 && quiz.state.inversions.length < 2; i++) quiz.next();
+    const all = quiz.state.inversions;
+    expect(all.length).toBeGreaterThan(1);
+
+    const shape = quiz.state.shapes[0];
+    const result = answer(quiz, shape);
+    expect(result.correct).toBe(true);
+    expect(all).toContain(result.shape.inversion);
+    expect(result.remainingInversions).toEqual(all.filter((i) => i !== result.shape.inversion));
+  });
+
+  it("連続出題が ON なら、次の小問では答え済みの転回形が正解にならない", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major"],
+      inversions: [0, 1, 2],
+      askAllInversions: true,
+      rootStrings: [4],
+      showRoot: true,
+    });
+    // ルート位置によっては転回形が1つしか作れないので、複数ある問題まで送る
+    for (let i = 0; i < 50 && quiz.state.stepCount < 2; i++) quiz.next();
+    const count = quiz.state.stepCount;
+    expect(count).toBeGreaterThan(1);
+
+    const all = quiz.state.inversions;
+    expect(all.length).toBe(count);
+
+    const answered: number[] = [];
+    for (let i = 0; i < count; i++) {
+      // 残っている転回形だけが候補になっている
+      expect(quiz.state.inversions).toEqual(all.filter((x) => !answered.includes(x)));
+      expect(quiz.state.answeredInversions).toEqual(answered);
+
+      const shape = quiz.state.shapes[0];
+      const result = answer(quiz, shape);
+      expect(result.correct).toBe(true);
+      answered.push(shape.inversion);
+      quiz.next();
+    }
+    expect([...answered].sort()).toEqual(all);
+  });
+
+  it("連続出題が OFF なら1つのルート弦につき1問だけ", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major", "minor"],
+      inversions: [0, 1, 2],
+      askAllInversions: false,
+      rootStrings: [4],
+    });
+    // 連続出題が OFF なら、転回形がいくつあってもルート弦ごとに1小問だけ
+    for (let i = 0; i < 50; i++) {
+      expect(quiz.state.stepCount).toBe(1);
+      quiz.next();
+    }
+    // どの転回形でも答えられる問題が出ている
+    const quiz2 = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major", "minor"],
+      inversions: [0, 1, 2],
+      askAllInversions: false,
+      rootStrings: [4],
+    });
+    let multi = false;
+    for (let i = 0; i < 50 && !multi; i++) {
+      if (quiz2.state.inversions.length > 1) multi = true;
+      quiz2.next();
+    }
+    expect(multi).toBe(true);
+  });
+
+  it("ルート弦が変わると、答え済みの転回形はリセットされる", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major"],
+      inversions: [0, 1, 2],
+      askAllInversions: true,
+      rootStrings: [4, 3],
+      showRoot: true,
+    });
+    const log: { root: number; answered: number[] }[] = [];
+    const count = quiz.state.stepCount;
+    for (let i = 0; i < count; i++) {
+      log.push({ root: quiz.state.step.rootString, answered: quiz.state.answeredInversions });
+      answer(quiz);
+      quiz.next();
+    }
+    const seen = new Set<number>();
+    for (const [i, entry] of log.entries()) {
+      if (seen.has(entry.root)) {
+        // 同じルート弦が続く間は答え済みが積み上がる
+        expect(entry.answered.length, `step ${i}`).toBeGreaterThan(0);
+      } else {
+        // そのルート弦の最初の小問ではリセットされている
+        expect(entry.answered, `step ${i}`).toEqual([]);
+        seen.add(entry.root);
+      }
     }
   });
 });
