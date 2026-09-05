@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CHORD_QUALITIES, buildChordShapes, type ChordShape, type VoicingType } from "../src/core/chords";
+import { CHORD_QUALITIES, type ChordShape, type VoicingType } from "../src/core/chords";
+import { catalogChordShapes } from "../src/core/catalogShapes";
 import { pitchClassAt, type Position } from "../src/core/fretboard";
 import { noteName, type AccidentalStyle, type NotationMode } from "../src/core/notes";
 import { getTuning } from "../src/core/tuning";
@@ -257,24 +258,35 @@ describe("[S-CHORD-04][S-CHORD-06] コードモードのUI", () => {
     switchMode("chord");
   });
 
-  it("どのボイシングでも1〜6弦がルート弦として並ぶ", () => {
-    for (const v of ["triad", "seventh", "guide"]) {
-      const sel = $<HTMLSelectElement>("#chord-voicing");
+  it("ルート弦の選択肢はカタログに定番フォームがある弦だけ並ぶ", () => {
+    const rootChips = () =>
+      Array.from(document.querySelectorAll("#chord-root-strings .chip")).map((c) => c.textContent);
+    const sel = $<HTMLSelectElement>("#chord-voicing");
+
+    for (const v of ["triad", "seventh"]) {
       sel.value = v;
       sel.dispatchEvent(new window.Event("change"));
-      const chips = Array.from(document.querySelectorAll("#chord-root-strings .chip")).map(
-        (c) => c.textContent,
-      );
-      expect(chips, v).toEqual(["6弦", "5弦", "4弦", "3弦", "2弦", "1弦"]);
+      expect(rootChips(), v).toEqual(["6弦", "5弦", "4弦", "3弦", "2弦", "1弦"]);
     }
+
+    // ガイドトーンは6弦・5弦ルートの定番フォームしかない
+    sel.value = "guide";
+    sel.dispatchEvent(new window.Event("change"));
+    expect(rootChips()).toEqual(["6弦", "5弦"]);
   });
 
   it("コードの種類はボイシングに応じて切り替わり、最低1つは選択されたまま", () => {
     const sel = $<HTMLSelectElement>("#chord-voicing");
     sel.value = "guide";
     sel.dispatchEvent(new window.Event("change"));
+    // ガイドトーンは5度を省くので、5度が identity の m7♭5 / dim7 は出題できない
     const chips = Array.from(document.querySelectorAll<HTMLButtonElement>("#chord-qualities .chip"));
-    expect(chips).toHaveLength(6);
+    expect(chips.map((c) => c.textContent)).toEqual([
+      "メジャーセブンス",
+      "ドミナントセブンス",
+      "マイナーセブンス",
+      "マイナーメジャーセブンス",
+    ]);
 
     for (const chip of chips) chip.click();
     const active = Array.from(
@@ -331,7 +343,7 @@ describe("[S-CHORD-08] 複数ルート弦の連続出題（画面）", () => {
     if (!m) throw new Error(`ルート位置を読み取れません: ${sub}`);
     const root = { string: Number(m[1]), fret: Number(m[2]) };
     const voicing = $<HTMLSelectElement>("#chord-voicing").value as VoicingType;
-    const shape = buildChordShapes(tuning, voicing, quality, root)[0];
+    const shape = catalogChordShapes(tuning, voicing, quality, root)[0];
     if (!shape) throw new Error(`シェイプが見つかりません: ${name} ${sub}`);
     return shape;
   }
@@ -429,7 +441,7 @@ describe("[S-CHORD-08] 複数ルート弦の連続出題（画面）", () => {
       .find((q) => q.symbol === "" || name.endsWith(q.symbol))!;
     const m = /ルート (\d)弦 (\d+)フレット/.exec(text("#question-sub"))!;
     const root = { string: Number(m[1]), fret: Number(m[2]) };
-    const shapes = buildChordShapes(tuning, "triad", quality, root);
+    const shapes = catalogChordShapes(tuning, "triad", quality, root);
     const inversion = shapes.find((s) => s.rootIndex > 0);
     if (!inversion) return;
 

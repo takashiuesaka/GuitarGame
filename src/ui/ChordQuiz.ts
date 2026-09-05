@@ -1,9 +1,11 @@
 import {
-  buildChordShapes,
+  catalogChordShapes,
+  catalogQualities,
+  catalogRootStrings,
+} from "../core/catalogShapes";
+import {
   getChordQuality,
   getVoicing,
-  isVoicingAvailable,
-  qualitiesFor,
   samePositionSet,
   type ChordQuality,
   type ChordShape,
@@ -98,31 +100,28 @@ export class ChordQuiz {
 
   private normalize(config: Partial<ChordQuizConfig>): ChordQuizConfig {
     const voicing = config.voicing ?? "triad";
-    const available = qualitiesFor(voicing).map((q) => q.id);
+    const available = catalogQualities(voicing).map((q) => q.id);
     const qualityIds = (config.qualityIds ?? []).filter((id) => available.includes(id));
-    const rootStrings = (config.rootStrings ?? CHORD_ROOT_STRINGS).filter(
-      (s) => CHORD_ROOT_STRINGS.includes(s) && isVoicingAvailable(voicing, s),
-    );
+    const usable = ChordQuiz.availableRootStrings(voicing, this.tuning);
+    const rootStrings = (config.rootStrings ?? usable).filter((s) => usable.includes(s));
 
     return {
       voicing,
       qualityIds: qualityIds.length > 0 ? qualityIds : available.slice(0, 2),
-      rootStrings:
-        rootStrings.length > 0
-          ? [...new Set(rootStrings)].sort((a, b) => b - a)
-          : ChordQuiz.availableRootStrings(voicing),
+      rootStrings: rootStrings.length > 0 ? [...new Set(rootStrings)].sort((a, b) => b - a) : usable,
       showRoot: config.showRoot ?? true,
     };
   }
 
-  /** そのボイシングで使えるルート弦 */
-  static availableRootStrings(voicing: VoicingType): number[] {
-    return CHORD_ROOT_STRINGS.filter((s) => isVoicingAvailable(voicing, s));
+  /** そのボイシングで使えるルート弦（カタログに定番フォームがあるものだけ） */
+  static availableRootStrings(voicing: VoicingType, tuning: Tuning): number[] {
+    const usable = catalogRootStrings(voicing, tuning);
+    return CHORD_ROOT_STRINGS.filter((s) => usable.includes(s));
   }
 
   private qualities(): ChordQuality[] {
     const list = this.config.qualityIds.map(getChordQuality);
-    return list.length > 0 ? list : qualitiesFor(this.config.voicing).slice(0, 1);
+    return list.length > 0 ? list : catalogQualities(this.config.voicing).slice(0, 1);
   }
 
   /** ルート弦1本ぶんの小問を作る。作れなければ null */
@@ -134,7 +133,7 @@ export class ChordQuiz {
     for (let fret = 0; fret <= CHORD_ROOT_FALLBACK_FRET; fret++) {
       const root: Position = { string: rootString, fret };
       if (pitchClassAt(this.tuning, root) !== rootPitchClass) continue;
-      const shapes = buildChordShapes(this.tuning, this.config.voicing, quality, root);
+      const shapes = catalogChordShapes(this.tuning, this.config.voicing, quality, root);
       if (shapes.length > 0) return { rootString, root, shapes, shape: shapes[0] };
     }
     return null;
@@ -255,6 +254,8 @@ export class ChordQuiz {
 
   setTuning(tuning: Tuning): void {
     this.tuning = tuning;
+    // チューニングによって使えるルート弦・コードの種類が変わるので設定を正規化し直す
+    this.config = this.normalize(this.config);
     this.restart();
   }
 

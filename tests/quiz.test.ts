@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  CHORD_QUALITIES,
-  isPlayableShape,
-  qualitiesFor,
-  type VoicingType,
-} from "../src/core/chords";
+import { catalogQualities } from "../src/core/catalogShapes";
+import { CHORD_QUALITIES, isPlayableShape, type VoicingType } from "../src/core/chords";
 import { pitchClassAt, type Position } from "../src/core/fretboard";
 import { getTuning } from "../src/core/tuning";
 import { ChordQuiz } from "../src/ui/ChordQuiz";
@@ -200,10 +196,14 @@ describe("[S-CHORD-01] コードシェイプクイズの出題", () => {
 });
 
 describe("[S-CHORD-04] ルート弦の選択", () => {
-  it("どのボイシングでも1〜6弦をルートに選べる", () => {
-    for (const voicing of ["triad", "seventh", "guide"] as VoicingType[]) {
-      expect(ChordQuiz.availableRootStrings(voicing)).toEqual([6, 5, 4, 3, 2, 1]);
+  it("トライアド・セブンスは1〜6弦をルートに選べる", () => {
+    for (const voicing of ["triad", "seventh"] as VoicingType[]) {
+      expect(ChordQuiz.availableRootStrings(voicing, tuning)).toEqual([6, 5, 4, 3, 2, 1]);
     }
+  });
+
+  it("ガイドトーンは定番フォームのある6弦・5弦ルートだけ", () => {
+    expect(ChordQuiz.availableRootStrings("guide", tuning)).toEqual([6, 5]);
   });
 
   it("選んだルート弦の数だけ小問が作られる（低音弦から順）", () => {
@@ -222,11 +222,11 @@ describe("[S-CHORD-04] ルート弦の選択", () => {
   });
 
   it("1弦・2弦・3弦ルートでも出題できる", () => {
-    for (const voicing of ["triad", "seventh", "guide"] as VoicingType[]) {
+    for (const voicing of ["triad", "seventh"] as VoicingType[]) {
       for (const s of [3, 2, 1]) {
         const quiz = new ChordQuiz(tuning, {
           voicing,
-          qualityIds: qualitiesFor(voicing).map((q) => q.id),
+          qualityIds: catalogQualities(voicing).map((q) => q.id),
           rootStrings: [s],
         });
         expect(quiz.state.step.rootString, `${voicing}/${s}弦`).toBe(s);
@@ -359,9 +359,9 @@ describe("[S-CHORD-07] コードシェイプクイズの判定", () => {
     try {
       const make = () =>
         new ChordQuiz(tuning, {
-          voicing: "triad",
-          qualityIds: ["major"],
-          rootStrings: [5],
+          voicing: "seventh",
+          qualityIds: ["dim7"],
+          rootStrings: [6],
           showRoot: true,
         });
       const skipped = make().state.shapes.filter((shape) =>

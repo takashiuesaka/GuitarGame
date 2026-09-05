@@ -10,13 +10,13 @@ import {
 import {
   chordName,
   getVoicing,
-  qualitiesFor,
   VOICINGS,
   type VoicingType,
 } from "./core/chords";
 import { midiAt, type Position } from "./core/fretboard";
 import { noteName, type AccidentalStyle, type NotationMode } from "./core/notes";
 import { getTuning, TUNINGS, type Tuning } from "./core/tuning";
+import { catalogQualities } from "./core/catalogShapes";
 import { ChordQuiz } from "./ui/ChordQuiz";
 import { DegreeQuiz, ROOT_MAX_FRET, type AnswerScope, type RootMode } from "./ui/DegreeQuiz";
 import { Fretboard, type Marker } from "./ui/Fretboard";
@@ -430,7 +430,7 @@ const isAnswered = (): boolean =>
 function buildChordChips(): void {
   const voicing = settings.chordVoicing;
   chordVoicingSelect.value = voicing;
-  const qualities = qualitiesFor(voicing);
+  const qualities = catalogQualities(voicing);
   const validIds = settings.chordQualityIds.filter((id) =>
     qualities.some((q) => q.id === id),
   );
@@ -461,7 +461,7 @@ function buildChordChips(): void {
     chordQualitiesBox.appendChild(btn);
   }
 
-  const rootStrings = ChordQuiz.availableRootStrings(voicing);
+  const rootStrings = ChordQuiz.availableRootStrings(voicing, tuning);
   const validRoots = settings.chordRootStrings.filter((s) => rootStrings.includes(s));
   settings.chordRootStrings = validRoots.length > 0 ? validRoots : [rootStrings[0]];
 
@@ -960,6 +960,9 @@ tuningSelect.addEventListener("change", () => {
   degreeQuiz.setTuning(tuning);
   chordQuiz.setTuning(tuning);
   fretboard.setTuning(tuning);
+  // チューニングによって使えるルート弦が変わる（例: ドロップDでは6弦ルートの定番形が無い）
+  buildChordChips();
+  chordQuiz.setConfig({ rootStrings: settings.chordRootStrings });
   nextQuestion();
 });
 

@@ -9,7 +9,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit && vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "catalog": "node --import ./scripts/ts-resolver.mjs scripts/dump-catalog.ts"
   },
   "keywords": [],
   "author": "",
