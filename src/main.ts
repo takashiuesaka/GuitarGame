@@ -72,7 +72,7 @@ function loadSettings(): Settings {
     chordQualityIds: ["major", "minor"],
     chordRootStrings: [6, 5],
     chordInversions: [0],
-    chordAskAllInversions: false,
+    chordAskAllInversions: true,
     chordShowRoot: true,
     showAllNames: false,
     autoNext: true,

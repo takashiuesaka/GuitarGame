@@ -318,13 +318,28 @@ export class ChordQuiz {
 
   /** まだ回答していない小問が残っているか */
   get hasNextStep(): boolean {
-    return this.stepIndex < this.question.steps.length - 1;
+    return this.nextStepIndex() !== null;
+  }
+
+  /**
+   * 次に出題する小問の位置。
+   * 同じルート弦の小問は、まだ答えていない転回形が残っているときだけ出題する
+   * （答え終えた分の小問は飛ばす）。ルート弦が変われば必ず出題する。
+   */
+  private nextStepIndex(): number | null {
+    const steps = this.question.steps;
+    for (let i = this.stepIndex + 1; i < steps.length; i++) {
+      if (steps[i].rootString !== steps[i - 1].rootString) return i;
+      if (steps[i].inversions.some((inv) => !this.answeredInversions.includes(inv))) return i;
+    }
+    return null;
   }
 
   /** 次の小問が同じルート弦か（＝別の転回形を続けて答えるか） */
   get nextStepIsSameRootString(): boolean {
-    if (!this.hasNextStep) return false;
-    return this.question.steps[this.stepIndex + 1].rootString === this.step.rootString;
+    const next = this.nextStepIndex();
+    if (next === null) return false;
+    return this.question.steps[next].rootString === this.step.rootString;
   }
 
   /** ユーザーがクリックすべき最低音数（正解シェイプのうち最も音数の少ないもの） */
@@ -434,12 +449,13 @@ export class ChordQuiz {
         this.correct += 1;
         this.combo += 1;
         this.bestCombo = Math.max(this.bestCombo, this.combo);
-        // 連続出題では、次の小問で同じ転回形を答えられないようにする
-        if (!this.answeredInversions.includes(shape.inversion)) {
-          this.answeredInversions.push(shape.inversion);
-        }
       } else {
         this.combo = 0;
+      }
+      // 正解・不正解にかかわらず、扱った転回形は消費する。
+      // そうしないと小問だけ進んで、残りの転回形を答えないまま次のルート弦へ移ってしまう
+      if (!this.answeredInversions.includes(shape.inversion)) {
+        this.answeredInversions.push(shape.inversion);
       }
     }
 
@@ -463,9 +479,10 @@ export class ChordQuiz {
   next(): void {
     this.selected = [];
     this.answered = false;
-    if (this.hasNextStep) {
+    const next = this.nextStepIndex();
+    if (next !== null) {
       const previousString = this.step.rootString;
-      this.stepIndex += 1;
+      this.stepIndex = next;
       // ルート弦が変わったら、答え済みの転回形はリセットする
       if (this.step.rootString !== previousString) this.answeredInversions = [];
       return;

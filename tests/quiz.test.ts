@@ -605,6 +605,63 @@ describe("[S-CHORD-10] 転回形の選択", () => {
     return quiz.judge();
   };
 
+  /**
+   * 連続出題を長時間まわして、転回形の消費と小問の消費がずれないことを確かめる。
+   * `wrong` が true のときは、わざと不正解のまま「回答する」を押した状況を再現する。
+   */
+  const simulate = (wrong: boolean): void => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major", "minor"],
+      inversions: [0, 1, 2],
+      askAllInversions: true,
+      rootStrings: [6, 5, 4, 3],
+      showRoot: true,
+    });
+
+    for (let n = 0; n < 300; n++) {
+      const before = quiz.state;
+      const rest = before.inversions;
+      expect(rest.length, "出題中なら答えられる転回形が必ず残っている").toBeGreaterThan(0);
+
+      if (wrong && n % 3 === 0) {
+        quiz.judge(); // 何も選ばずに確定＝不正解
+      } else {
+        answer(quiz);
+      }
+
+      const after = quiz.state;
+      // 判定したぶん、転回形はかならず1つ消費される
+      expect(after.answeredInversions.length).toBe(before.answeredInversions.length + 1);
+
+      const wasLast = !quiz.hasNextStep;
+      const sameString = quiz.nextStepIsSameRootString;
+      quiz.next();
+
+      if (wasLast) continue;
+      if (sameString) {
+        // 同じルート弦を続けるなら、まだ答えていない転回形が残っている
+        expect(quiz.state.step.rootString).toBe(before.step.rootString);
+        expect(quiz.state.inversions.length).toBeGreaterThan(0);
+      } else {
+        // ルート弦が変わるのは、その弦の転回形をすべて答え終えたときだけ
+        expect(
+          after.step.inversions.filter((i) => !after.answeredInversions.includes(i)),
+          `弦 ${before.step.rootString} に残りがあるのに次のルート弦へ移った`,
+        ).toEqual([]);
+        expect(quiz.state.answeredInversions).toEqual([]);
+      }
+    }
+  };
+
+  it("連続出題では、残りの転回形があるうちは同じルート弦から離れない", () => {
+    simulate(false);
+  });
+
+  it("不正解でも、小問だけ進んで転回形が残ったまま次のルート弦へ移らない", () => {
+    simulate(true);
+  });
+
   it("選べる転回形はボイシングごとに違う", () => {
     expect(ChordQuiz.availableInversions("triad", tuning)).toEqual([0, 1, 2]);
     expect(ChordQuiz.availableInversions("seventh", tuning)).toEqual([0, 1, 2, 3]);

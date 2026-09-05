@@ -532,9 +532,7 @@ describe("[S-CHORD-10] 転回形の選択（画面）", () => {
 
   it("転回形と連続出題の設定が保存される", () => {
     invChips()[1].click();
-    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
-    box.checked = true;
-    box.dispatchEvent(new window.Event("change"));
+    setAskAll(true);
 
     const saved = JSON.parse(localStorage.getItem("guitar-game-settings") ?? "{}");
     expect(saved.chordInversions).toEqual([0, 1]);
@@ -544,9 +542,7 @@ describe("[S-CHORD-10] 転回形の選択（画面）", () => {
   it("連続出題を ON にすると転回形ごとに小問が並ぶ", () => {
     invChips()[1].click();
     invChips()[2].click();
-    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
-    box.checked = true;
-    box.dispatchEvent(new window.Event("change"));
+    setAskAll(true);
 
     // ルート弦を4弦だけに絞ると、その弦で作れる転回形の数だけ小問が並ぶ
     onlyRootString("4弦");
@@ -558,8 +554,20 @@ describe("[S-CHORD-10] 転回形の選択（画面）", () => {
     if (m) expect(Number(m[1])).toBeLessThanOrEqual(Number(m[2]));
   });
 
+  /** 連続出題を OFF にする（既定は ON） */
+  const setAskAll = (on: boolean): void => {
+    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
+    box.checked = on;
+    box.dispatchEvent(new window.Event("change"));
+  };
+
+  it("「選んだ転回形を連続で出題する」は既定で ON", () => {
+    expect($<HTMLInputElement>("#chord-ask-all-inversions").checked).toBe(true);
+  });
+
   it("複数選ぶと、いくつの転回形から選べるかが出題時に分かる", () => {
     // 実際に作れる転回形の数は問題によって変わるので、表記の形だけを検証する
+    setAskAll(false);
     invChips()[1].click();
     invChips()[2].click();
     onlyRootString("4弦");
@@ -571,6 +579,7 @@ describe("[S-CHORD-10] 転回形の選択（画面）", () => {
   });
 
   it("正解すると、答えたのが何転回だったかと残りの転回形が表示される", () => {
+    setAskAll(false);
     invChips()[1].click();
     invChips()[2].click();
     onlyRootString("4弦");
@@ -605,9 +614,7 @@ describe("[S-CHORD-10] 転回形の選択（画面）", () => {
   it("連続出題では、回答後も残りの転回形が専用のバッジに表示され続ける", () => {
     invChips()[1].click();
     invChips()[2].click();
-    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
-    box.checked = true;
-    box.dispatchEvent(new window.Event("change"));
+    setAskAll(true);
     onlyRootString("4弦");
 
     // 補足行から現在の問題を復元し、候補のシェイプで答える
@@ -645,16 +652,13 @@ describe("[S-CHORD-10] 転回形の選択（画面）", () => {
   it("連続出題では、出題時から押さえる転回形がバッジに出る", () => {
     invChips()[1].click();
     invChips()[2].click();
-    const box = $<HTMLInputElement>("#chord-ask-all-inversions");
-    box.checked = true;
-    box.dispatchEvent(new window.Event("change"));
+    setAskAll(true);
     onlyRootString("4弦");
 
     expect(text("#inversion-hint")).toContain("押さえるのは");
 
     // 連続出題を OFF に戻すとバッジは消える
-    box.checked = false;
-    box.dispatchEvent(new window.Event("change"));
+    setAskAll(false);
     expect(text("#inversion-hint")).toBe("");
   });
 });
