@@ -230,9 +230,13 @@ export class ChordQuiz {
     return this.stepIndex < this.question.steps.length - 1;
   }
 
-  /** ユーザーがクリックすべき最低音数（構成音がひととおり揃う音数） */
+  /** ユーザーがクリックすべき最低音数（正解シェイプのうち最も音数の少ないもの） */
   minCount(): number {
-    const total = getVoicing(this.config.voicing).noteCount;
+    const shapes = this.step.shapes;
+    const total =
+      shapes.length > 0
+        ? Math.min(...shapes.map((s) => s.positions.length))
+        : getVoicing(this.config.voicing).noteCount;
     return this.config.showRoot ? total - 1 : total;
   }
 

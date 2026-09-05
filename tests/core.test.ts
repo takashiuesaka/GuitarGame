@@ -15,6 +15,7 @@ import {
   MAX_FINGERS,
   samePositionSet,
   VOICINGS,
+  type VoicingType,
 } from "../src/core/chords";
 import { DEGREE_GROUPS, degreeLabel, getDegree } from "../src/core/degrees";
 import { midiAt, pitchClassAt, MAX_FRET } from "../src/core/fretboard";
@@ -75,15 +76,48 @@ describe("[S-DEG-02] 度数グループ", () => {
   });
 });
 
+/** そのボイシングでカタログから作れる正解シェイプをすべて集める */
+const shapesOf = (voicing: VoicingType) => {
+  const shapes = [];
+  for (const q of catalogQualities(voicing)) {
+    for (const s of catalogRootStrings(voicing, tuning)) {
+      for (let f = 0; f <= 17; f++) {
+        shapes.push(...catalogChordShapes(tuning, voicing, q, { string: s, fret: f }));
+      }
+    }
+  }
+  return shapes;
+};
+
 describe("[S-CHORD-02] ボイシング定義", () => {
-  it("triad / seventh / guide の3種類", () => {
-    expect(VOICINGS.map((v) => v.id)).toEqual(["triad", "seventh", "guide"]);
+  it("triad / seventh / guide / form の4種類", () => {
+    expect(VOICINGS.map((v) => v.id)).toEqual(["triad", "seventh", "guide", "form"]);
   });
 
   it("音数はボイシング定義と一致する", () => {
     expect(getVoicing("triad").noteCount).toBe(3);
     expect(getVoicing("seventh").noteCount).toBe(4);
     expect(getVoicing("guide").noteCount).toBe(3);
+    expect(getVoicing("form").noteCount).toBe(4);
+  });
+
+  it("triad / seventh / guide はオクターブ重複がなく、音数が定義と一致する", () => {
+    for (const voicing of ["triad", "seventh", "guide"] as const) {
+      for (const shape of shapesOf(voicing)) {
+        expect(shape.positions.length, shape.catalogId).toBe(getVoicing(voicing).noteCount);
+      }
+    }
+  });
+
+  it("form はオクターブ重複を含む4〜6音の開放・バレーコード", () => {
+    const shapes = shapesOf("form");
+    expect(shapes.length).toBeGreaterThan(0);
+    for (const shape of shapes) {
+      expect(shape.positions.length, shape.catalogId).toBeGreaterThanOrEqual(4);
+      expect(shape.positions.length, shape.catalogId).toBeLessThanOrEqual(6);
+      const pcs = new Set(shape.intervals.map((i) => ((i % 12) + 12) % 12));
+      expect(shape.positions.length, shape.catalogId).toBeGreaterThan(pcs.size);
+    }
   });
 });
 
@@ -204,31 +238,17 @@ describe("[S-CHORD-09] 押弦できるシェイプかの判定", () => {
 });
 
 describe("[S-CHORD-05] カタログからの正解シェイプ導出", () => {
-  const allShapes = () => {
-    const shapes = [];
-    for (const v of VOICINGS) {
-      for (const q of catalogQualities(v.id)) {
-        for (const s of catalogRootStrings(v.id, tuning)) {
-          for (let f = 0; f <= 17; f++) {
-            shapes.push(...catalogChordShapes(tuning, v.id, q, { string: s, fret: f }));
-          }
-        }
-      }
-    }
-    return shapes;
-  };
+  const allShapes = () => VOICINGS.flatMap((v) => shapesOf(v.id));
 
   it("シェイプの構成音はコードの構成音と一致する（ガイドトーンは5度を省く）", () => {
     for (const shape of allShapes()) {
       const pcs = [...new Set(shape.intervals.map((i) => ((i % 12) + 12) % 12))].sort(
         (a, b) => a - b,
       );
-      const expected = [...shape.quality.intervals].sort((a, b) => a - b);
-      const wanted =
-        shape.voicing === "guide"
-          ? expected.filter((i) => i !== shape.quality.intervals[2])
-          : expected;
+      const wanted = shape.quality.intervals.filter((i) => !shape.omits.includes(i));
       expect(pcs, shape.catalogId).toEqual([...wanted].sort((a, b) => a - b));
+      // ガイドトーンは必ず5度を省く
+      if (shape.voicing === "guide") expect(shape.omits).toEqual([shape.quality.intervals[2]]);
     }
   });
 
@@ -278,7 +298,7 @@ describe("[S-CHORD-05] カタログからの正解シェイプ導出", () => {
       list.map((p) => `${p.string}-${p.fret}`).join("|");
 
     // 開放 E メジャー（022100）は 5th と root が重複する 6 音シェイプ
-    const openE = catalogChordShapes(tuning, "triad", getChordQuality("major")!, {
+    const openE = catalogChordShapes(tuning, "form", getChordQuality("major")!, {
       string: 6,
       fret: 0,
     });
@@ -294,7 +314,7 @@ describe("[S-CHORD-05] カタログからの正解シェイプ導出", () => {
     );
 
     // C#maj7 の A フォーム: 5th が 4弦と1弦に重複する
-    const cs = catalogChordShapes(tuning, "seventh", getChordQuality("maj7")!, {
+    const cs = catalogChordShapes(tuning, "form", getChordQuality("maj7")!, {
       string: 5,
       fret: 4,
     });
@@ -316,10 +336,14 @@ describe("[S-CHORD-05] カタログからの正解シェイプ導出", () => {
     expect(shapes.length).toBeGreaterThan(0);
     for (const s of shapes) expect(s.rootIndex).toBe(s.positions.length - 1);
 
-    // 5弦ルートはルートが最低音のものと、6弦を含む展開形の両方がある
+    // 5弦ルートでも、6弦を含む展開形（第2転回形）が正解になる
     const fifth = catalogChordShapes(tuning, "triad", major, { string: 5, fret: 3 });
-    expect(fifth.some((s) => s.rootIndex === 0)).toBe(true);
     expect(fifth.some((s) => s.rootIndex > 0)).toBe(true);
+
+    // 4弦ルートはルートが最低音のものと展開形の両方がある
+    const fourth = catalogChordShapes(tuning, "triad", major, { string: 4, fret: 5 });
+    expect(fourth.some((s) => s.rootIndex === 0)).toBe(true);
+    expect(fourth.some((s) => s.rootIndex > 0)).toBe(true);
   });
 
   it("定番シェイプが正解候補に含まれる", () => {
@@ -353,14 +377,27 @@ describe("[S-CHORD-05] カタログからの正解シェイプ導出", () => {
     expect(has(cmaj7, [[5, 3], [4, 5], [3, 4], [2, 5]])).toBe(true);
   });
 
-  it("各ボイシング×コード×ルート弦で、0〜17フレットのどこかに必ずシェイプがある", () => {
+  it("各ボイシング×コードで、少なくとも1本のルート弦にシェイプがある", () => {
     for (const v of VOICINGS) {
       for (const q of catalogQualities(v.id)) {
-        for (const s of catalogRootStrings(v.id, tuning)) {
-          const found = Array.from({ length: 18 }, (_, f) =>
+        const usable = catalogRootStrings(v.id, tuning).filter((s) =>
+          Array.from({ length: 18 }, (_, f) =>
             catalogChordShapes(tuning, v.id, q, { string: s, fret: f }),
+          ).some((list) => list.length > 0),
+        );
+        expect(usable.length, `${v.id}/${q.id}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("triad / seventh / guide はすべてのルート弦にシェイプがある", () => {
+    for (const v of ["triad", "seventh", "guide"] as const) {
+      for (const q of catalogQualities(v)) {
+        for (const s of catalogRootStrings(v, tuning)) {
+          const found = Array.from({ length: 18 }, (_, f) =>
+            catalogChordShapes(tuning, v, q, { string: s, fret: f }),
           ).filter((list) => list.length > 0);
-          expect(found.length, `${v.id}/${q.id}/${s}弦`).toBeGreaterThan(0);
+          expect(found.length, `${v}/${q.id}/${s}弦`).toBeGreaterThan(0);
         }
       }
     }

@@ -195,11 +195,59 @@ describe("[S-CHORD-01] コードシェイプクイズの出題", () => {
   });
 });
 
+describe("[S-CHORD-02] ボイシングごとの音数", () => {
+  it("トライアドはオクターブ重複のない3音だけが正解", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "triad",
+      qualityIds: ["major", "minor"],
+      rootStrings: [6, 5, 4],
+    });
+    for (let i = 0; i < 50; i++) {
+      for (const shape of quiz.state.shapes) {
+        expect(shape.positions.length, shape.catalogId).toBe(3);
+      }
+      quiz.next();
+    }
+  });
+
+  it("コードフォームはオクターブ重複を含む4〜6音", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "form",
+      qualityIds: ["major", "minor", "maj7"],
+      rootStrings: [6, 5],
+    });
+    for (let i = 0; i < 50; i++) {
+      for (const shape of quiz.state.shapes) {
+        expect(shape.voicing).toBe("form");
+        expect(shape.positions.length, shape.catalogId).toBeGreaterThanOrEqual(4);
+        const pcs = new Set(shape.intervals.map((n) => ((n % 12) + 12) % 12));
+        expect(shape.positions.length, shape.catalogId).toBeGreaterThan(pcs.size);
+      }
+      quiz.next();
+    }
+  });
+
+  it("最低音数は正解シェイプのうち最も音数の少ないものに合わせる", () => {
+    const quiz = new ChordQuiz(tuning, {
+      voicing: "form",
+      qualityIds: ["major"],
+      rootStrings: [6],
+      showRoot: false,
+    });
+    const min = Math.min(...quiz.state.shapes.map((s) => s.positions.length));
+    expect(quiz.minCount()).toBe(min);
+  });
+});
+
 describe("[S-CHORD-04] ルート弦の選択", () => {
   it("トライアド・セブンスは1〜6弦をルートに選べる", () => {
     for (const voicing of ["triad", "seventh"] as VoicingType[]) {
       expect(ChordQuiz.availableRootStrings(voicing, tuning)).toEqual([6, 5, 4, 3, 2, 1]);
     }
+  });
+
+  it("コードフォームは定番フォームのある6〜4弦ルートだけ", () => {
+    expect(ChordQuiz.availableRootStrings("form", tuning)).toEqual([6, 5, 4]);
   });
 
   it("ガイドトーンは定番フォームのある6弦・5弦ルートだけ", () => {

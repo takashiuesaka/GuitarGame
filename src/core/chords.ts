@@ -35,14 +35,13 @@ export function getChordQuality(id: string): ChordQuality {
 }
 
 /** ボイシングの種類 */
-export type VoicingType = "triad" | "seventh" | "guide";
+export type VoicingType = "triad" | "seventh" | "guide" | "form";
 
 export interface VoicingDef {
   id: VoicingType;
   label: string;
   description: string;
-  category: ChordCategory;
-  /** 押さえる音数 */
+  /** 押さえる最低音数。オクターブを重ねてこれより増えることがある */
   noteCount: number;
 }
 
@@ -50,23 +49,26 @@ export const VOICINGS: VoicingDef[] = [
   {
     id: "triad",
     label: "トライアド（R・3rd・5th）",
-    description: "ルート・3度・5度の3音",
-    category: "triad",
+    description: "ルート・3度・5度の3音。オクターブ重複なし",
     noteCount: 3,
   },
   {
     id: "seventh",
     label: "セブンス（R・3rd・5th・7th）",
-    description: "ルート・3度・5度・7度の4音",
-    category: "seventh",
+    description: "ルート・3度・5度・7度の4音。オクターブ重複なし",
     noteCount: 4,
   },
   {
     id: "guide",
     label: "ガイドトーン（R・3rd・7th／5th省略）",
     description: "5度を省いたシェルボイシング。ジャズで多用される3音",
-    category: "seventh",
     noteCount: 3,
+  },
+  {
+    id: "form",
+    label: "コードフォーム（開放・バレー）",
+    description: "構成音をオクターブで重ねた開放コード／バレーコードの形。4〜6音",
+    noteCount: 4,
   },
 ];
 
@@ -87,6 +89,8 @@ export interface ChordShape {
   rootIndex: number;
   /** 押さえるのに必要な指の本数（開放弦は 0 本、セーハは 1 本） */
   fingers: number;
+  /** 意図的に省略している構成音（ルートからの半音距離）。通常は5度 */
+  omits: number[];
   /** 元になったカタログエントリの ID */
   catalogId: string;
   /** 元になったカタログエントリの表示名（例: "ドロップ2 型1"） */

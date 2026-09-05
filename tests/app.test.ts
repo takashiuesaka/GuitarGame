@@ -273,6 +273,16 @@ describe("[S-CHORD-04][S-CHORD-06] コードモードのUI", () => {
     sel.value = "guide";
     sel.dispatchEvent(new window.Event("change"));
     expect(rootChips()).toEqual(["6弦", "5弦"]);
+
+    // 開放・バレーコードは6〜4弦ルート
+    sel.value = "form";
+    sel.dispatchEvent(new window.Event("change"));
+    expect(rootChips()).toEqual(["6弦", "5弦", "4弦"]);
+  });
+
+  it("ボイシングは4種類から選べる", () => {
+    const options = Array.from($<HTMLSelectElement>("#chord-voicing").options).map((o) => o.value);
+    expect(options).toEqual(["triad", "seventh", "guide", "form"]);
   });
 
   it("コードの種類はボイシングに応じて切り替わり、最低1つは選択されたまま", () => {

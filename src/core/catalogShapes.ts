@@ -67,11 +67,29 @@ export function isShapeValidIn(entry: CatalogShape, tuning: Tuning): boolean {
   return expected.every((i) => actual.has(i));
 }
 
+const voicingCache = new Map<string, VoicingType>();
+
 /** カタログのエントリがどのボイシングに当たるか */
 export function catalogVoicing(shape: CatalogShape): VoicingType {
+  const cached = voicingCache.get(shape.id);
+  if (cached) return cached;
+
+  const analysis = analyzeCatalogShape(shape);
+  const pitchClasses = new Set(analysis.intervals.map((i) => ((i % 12) + 12) % 12));
   const quality = getChordQuality(shape.qualityId);
-  if (quality.category === "triad") return "triad";
-  return shape.omits && shape.omits.length > 0 ? "guide" : "seventh";
+
+  // 構成音をオクターブで重ねている形は「コードフォーム」（開放コード・バレーコード）
+  const voicing: VoicingType =
+    analysis.noteCount > pitchClasses.size
+      ? "form"
+      : quality.category === "triad"
+        ? "triad"
+        : shape.omits && shape.omits.length > 0
+          ? "guide"
+          : "seventh";
+
+  voicingCache.set(shape.id, voicing);
+  return voicing;
 }
 
 /** そのボイシングで出題できるコードの種類（カタログにあるものだけ） */
@@ -144,6 +162,7 @@ function toChordShape(
     intervals: positions.map((p) => midiAt(tuning, p) - rootMidi),
     rootIndex,
     fingers: fingerCount(positions),
+    omits: entry.omits ?? [],
     catalogId: entry.id,
     catalogName: entry.name,
   };

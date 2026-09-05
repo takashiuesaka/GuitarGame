@@ -542,7 +542,9 @@ function updateChordSub(): void {
     parts.push(
       s.remaining > 0
         ? `あと ${s.remaining} 音以上（${s.selected.length} 音選択中）`
-        : `${s.selected.length} 音選択中（オクターブを足してもOK）`,
+        : chordQuiz.voicing === "form"
+          ? `${s.selected.length} 音選択中（オクターブを足してもOK）`
+          : `${s.selected.length} 音選択中`,
     );
   }
   questionSub.textContent = parts.join(" ／ ");
