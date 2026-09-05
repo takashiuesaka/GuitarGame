@@ -119,3 +119,18 @@ npm run test:watch
 npm run check     # tsc --noEmit && vitest run
 ```
 
+
+## デプロイ（GitHub Pages）
+
+サーバー処理を持たない静的サイトなので、GitHub Pages だけで公開できます。
+`main` ブランチへ push すると `.github/workflows/deploy-pages.yml` が動き、
+型チェック → テスト → `vite build` → `dist/` を Pages へデプロイします。
+
+初回だけリポジトリ側の設定が必要です。
+
+1. GitHub の **Settings → Pages** を開く
+2. **Build and deployment** の **Source** を **GitHub Actions** に変更する
+
+公開 URL は `https://takashiuesaka.github.io/GuitarGame/` です。
+`vite.config.ts` の `base` は `"./"`（相対パス）にしてあるため、
+サブディレクトリ配信でもアセットの参照が壊れません。
