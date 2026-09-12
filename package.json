@@ -10,7 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit && vitest run",
     "preview": "vite preview",
-    "catalog": "node --import ./scripts/ts-resolver.mjs scripts/dump-catalog.ts"
+    "catalog": "node --import ./scripts/ts-resolver.mjs scripts/dump-catalog.ts",
+    "catalog:scales": "node --import ./scripts/ts-resolver.mjs scripts/dump-scale-catalog.ts"
   },
   "keywords": [],
   "author": "",

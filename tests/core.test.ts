@@ -19,10 +19,86 @@ import {
 } from "../src/core/chords";
 import { DEGREE_GROUPS, degreeLabel, getDegree } from "../src/core/degrees";
 import { midiAt, pitchClassAt, MAX_FRET } from "../src/core/fretboard";
+import { DEFAULT_NOTE_BLOCK, isInNoteBlock, noteBlockError, noteRegionError, scaleBlockOutline, type ScaleNoteBlock } from "../src/core/noteBlock";
 import { noteName } from "../src/core/notes";
 import { getTuning, TUNINGS } from "../src/core/tuning";
 
 const tuning = getTuning("standard");
+
+describe("[S-NOTE-07] スケール運指の回答範囲", () => {
+  const block: ScaleNoteBlock = {
+    kind: "scale",
+    root: { string: 6, fret: 8 },
+    positions: [
+      { string: 6, fret: 8 }, { string: 6, fret: 10 },
+      { string: 5, fret: 7 }, { string: 5, fret: 8 }, { string: 5, fret: 10 },
+      { string: 4, fret: 7 }, { string: 4, fret: 9 }, { string: 4, fret: 10 },
+    ],
+  };
+
+  it("全12音でなく7音とオクターブ違いのルートを含む運指を許可する", () => {
+    expect(noteRegionError(tuning, block)).toBeNull();
+    expect(isInNoteBlock({ string: 6, fret: 8 }, block)).toBe(true);
+    expect(isInNoteBlock({ string: 6, fret: 9 }, block)).toBe(false);
+    expect(isInNoteBlock({ string: 5, fret: 9 }, block)).toBe(false);
+  });
+
+  it("ルート・オクターブの欠落、範囲外、重複を理由付きで拒否する", () => {
+    expect(noteRegionError(tuning, { ...block, root: { string: 1, fret: 8 } })).toContain("ルート");
+    expect(noteRegionError(tuning, { ...block, positions: block.positions.slice(0, -1) })).toContain("オクターブ");
+    expect(noteRegionError(tuning, { ...block, positions: [...block.positions, { string: 1, fret: 25 }] })).toContain("範囲外");
+    expect(noteRegionError(tuning, { ...block, positions: [...block.positions, block.positions[0]] })).toContain("重複");
+  });
+
+  it("全体では7音でも、基準ルートからの1オクターブ内に音が欠けている集合を拒否する", () => {
+    const missingD = block.positions.filter((pos) => !(pos.string === 6 && pos.fret === 10));
+    const higherD = { string: 2, fret: 3 };
+    expect(noteRegionError(tuning, { ...block, positions: [...missingD, higherD] })).toContain("1オクターブ");
+    expect(noteRegionError(tuning, { ...block, positions: [...block.positions, higherD] })).toBeNull();
+  });
+
+  it("[S-NOTE-09] 外周だけを描き、隣り合うセルの共有境界を含めない", () => {
+    const edges = scaleBlockOutline(block);
+    expect(edges).toContainEqual([7, 3, 8, 3]);
+    expect(edges).toContainEqual([8, 5, 8, 6]);
+    expect(edges).not.toContainEqual([8, 4, 9, 4]);
+    expect(edges).not.toContainEqual([9, 5, 9, 6]);
+    expect(new Set(edges.map((edge) => edge.join(","))).size).toBe(edges.length);
+  });
+});
+
+describe("[S-NOTE-04] ブロックの範囲と1オクターブ分の音名", () => {
+  it.each(TUNINGS)("既定の1〜3弦・0〜4fは $label でも全12音を含む", (current) => {
+    expect(noteBlockError(current, DEFAULT_NOTE_BLOCK)).toBeNull();
+  });
+
+  it("ちょうど12音は有効、11音は無効（音域の広さだけでは判定しない）", () => {
+    expect(noteBlockError(tuning, { firstString: 1, lastString: 1, minFret: 0, maxFret: 11 })).toBeNull();
+    expect(noteBlockError(tuning, { firstString: 1, lastString: 1, minFret: 0, maxFret: 10 })).toContain("現在11音");
+    expect(noteBlockError(tuning, { firstString: 1, lastString: 6, minFret: 0, maxFret: 0 })).toContain("全12音");
+  });
+
+  it.each([
+    null, {}, [], { ...DEFAULT_NOTE_BLOCK, firstString: 0 },
+    { ...DEFAULT_NOTE_BLOCK, lastString: 7 },
+    { ...DEFAULT_NOTE_BLOCK, firstString: 4 },
+    { ...DEFAULT_NOTE_BLOCK, minFret: -1 },
+    { ...DEFAULT_NOTE_BLOCK, maxFret: 25 },
+    { ...DEFAULT_NOTE_BLOCK, minFret: 5 },
+    { ...DEFAULT_NOTE_BLOCK, maxFret: 4.5 },
+    { ...DEFAULT_NOTE_BLOCK, firstString: "1" },
+    { ...DEFAULT_NOTE_BLOCK, maxFret: NaN },
+  ])("無効な範囲・保存値 %j は理由付きで拒否する", (value) => {
+    expect(noteBlockError(tuning, value)).toEqual(expect.any(String));
+  });
+
+  it("範囲の両端を含み、弦やフレットが外れた位置は含まない", () => {
+    expect(isInNoteBlock({ string: 1, fret: 0 }, DEFAULT_NOTE_BLOCK)).toBe(true);
+    expect(isInNoteBlock({ string: 3, fret: 4 }, DEFAULT_NOTE_BLOCK)).toBe(true);
+    expect(isInNoteBlock({ string: 4, fret: 0 }, DEFAULT_NOTE_BLOCK)).toBe(false);
+    expect(isInNoteBlock({ string: 1, fret: 5 }, DEFAULT_NOTE_BLOCK)).toBe(false);
+  });
+});
 
 describe("[S-APP-01] 指板の座標系", () => {
   it("6弦開放は E2 (MIDI 40)、1弦開放は E4 (MIDI 64)", () => {
