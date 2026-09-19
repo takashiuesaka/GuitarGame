@@ -136,9 +136,7 @@ let selectedScaleBlock = scaleBlocks.find((block) => matchesScaleSelection(block
   ?? chooseScaleBlock(scaleBlocks, settings.noteScale);
 if (!matchesScaleSelection(selectedScaleBlock, settings.noteScale)) {
   settings.noteScale = { ...selectedScaleBlock.selection };
-  if (settings.noteBlockSource === "scale") {
-    noteSettingsNotice = "保存された運指は現在の条件で使えないため、成立するカタログ運指に更新しました。";
-  }
+  noteSettingsNotice = "保存された運指は現在の条件で使えないため、成立するカタログ運指に更新しました。";
 }
 if (noteSettingsNotice) {
   console.warn(noteSettingsNotice);

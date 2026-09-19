@@ -342,6 +342,38 @@ describe("[S-NOTE-04][S-NOTE-05][S-NOTE-06] ブロック音名クイズの画面
       expect(document.querySelectorAll(".inside-block")).toHaveLength(16);
     });
 
+    it.each([
+      { tuningId: "standard", patternId: "deleted" },
+      { tuningId: "drop-d", patternId: "major-basic-box" },
+    ])("[S-APP-03][S-NOTE-10] カスタム使用中も無効な運指を保存・通知する: $tuningId / $patternId", async ({ tuningId, patternId }) => {
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const noteScale = { ...DEFAULT_SCALE_SELECTION, patternId };
+      const custom = { firstString: 1, lastString: 4, minFret: 0, maxFret: 5 };
+      await mountScale({ noteBlockSource: "custom", noteBlock: custom, tuningId, noteScale });
+
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("成立するカタログ運指"));
+      expect(text("#note-block-error")).toContain("成立するカタログ運指");
+      const saved = JSON.parse(localStorage.getItem("guitar-game-settings")!);
+      expect(saved).toMatchObject({ noteBlockSource: "custom", noteBlock: custom, noteScope: "block" });
+      expect(saved.noteScale).not.toEqual(noteScale);
+      const block = catalogScaleBlocks(getTuning(tuningId), "major", 0)
+        .find((entry) => matchesScaleSelection(entry, saved.noteScale));
+      expect(block).toBeDefined();
+
+      warning.mockClear();
+      await mountApp(saved);
+      expect(warning).not.toHaveBeenCalled();
+      expect(text("#note-block-error")).toBe("");
+      expect(JSON.parse(localStorage.getItem("guitar-game-settings")!).noteScale).toEqual(saved.noteScale);
+      changeSelect("#note-block-source", "scale");
+      expect($<HTMLSelectElement>("#note-scale-pattern").value).toBe(saved.noteScale.patternId);
+      expect($<HTMLSelectElement>("#note-scale-root-string").value).toBe(String(saved.noteScale.rootString));
+      expect($<HTMLSelectElement>("#note-scale-root-fret").value).toBe(String(saved.noteScale.rootFret));
+      const positions = Array.from(document.querySelectorAll<SVGElement>(".inside-block"))
+        .map((cell) => `${cell.dataset.string}:${cell.dataset.fret}`);
+      expect(new Set(positions)).toEqual(new Set(block!.positions.map((pos) => `${pos.string}:${pos.fret}`)));
+    });
+
     it("音名表記変更をスケール選択にも反映する", async () => {
       await mountScale();
       changeSelect("#notation", "ja");
