@@ -1381,7 +1381,7 @@ tuningSelect.addEventListener("change", () => {
       return;
     }
   }
-  noteBlockNotice.textContent = settings.noteBlockSource === "scale" && !matchesScaleSelection(nextScaleBlock, settings.noteScale)
+  noteBlockNotice.textContent = !matchesScaleSelection(nextScaleBlock, settings.noteScale)
     ? "新しいチューニングで成立するルート位置・音域に更新しました。"
     : "";
   tuning = nextTuning;

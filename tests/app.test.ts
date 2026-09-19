@@ -316,6 +316,31 @@ describe("[S-NOTE-04][S-NOTE-05][S-NOTE-06] ブロック音名クイズの画面
       expect(text("#score-correct")).toBe("1");
     });
 
+    it.each([
+      { noteBlockSource: "custom", noteScope: "block" },
+      { noteBlockSource: "custom", noteScope: "whole" },
+      { noteBlockSource: "scale", noteScope: "whole" },
+    ])("[S-NOTE-10] チューニングによる運指補正を方式・適用状態によらず通知する: $noteBlockSource / $noteScope", async ({ noteBlockSource, noteScope }) => {
+      const custom = { firstString: 1, lastString: 4, minFret: 0, maxFret: 5 };
+      await mountScale({ noteBlockSource, noteScope, noteBlock: custom });
+      expect(text("#note-block-error")).toBe("");
+      changeSelect("#tuning", "drop-d");
+      expect($<HTMLSelectElement>("#tuning").value).toBe("drop-d");
+      expect(text("#note-block-error")).toContain("新しいチューニングで成立する");
+      const saved = JSON.parse(localStorage.getItem("guitar-game-settings")!);
+      expect(saved).toMatchObject({ tuningId: "drop-d", noteBlockSource, noteScope, noteBlock: custom });
+      expect(saved.noteScale.rootString).not.toBe(6);
+      const block = catalogScaleBlocks(getTuning("drop-d"), "major", 0)
+        .find((entry) => matchesScaleSelection(entry, saved.noteScale));
+      expect(block).toBeDefined();
+      expect($<HTMLSelectElement>("#note-scale-root-string").value).toBe(String(saved.noteScale.rootString));
+      expect($<HTMLInputElement>("#note-block-enabled").checked).toBe(noteScope === "block");
+
+      changeSelect("#tuning", "standard");
+      expect(JSON.parse(localStorage.getItem("guitar-game-settings")!).noteScale).toEqual(saved.noteScale);
+      expect(text("#note-block-error")).toBe("");
+    });
+
     it("[S-APP-05] スケール条件変更で自動送りを取り消し、別モードに運指を残さない", async () => {
       await mountScale({ autoNext: true });
       scaleAnswers().forEach(clickCell);
