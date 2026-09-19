@@ -69,6 +69,47 @@ body {
   display: none;
 }
 
+.block-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.block-picker label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#app.scale-block .note-custom-controls,
+#app:not(.scale-block) .note-scale-controls {
+  display: none;
+}
+
+#note-scale-info {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+#note-scale-info a {
+  color: var(--accent);
+}
+
+#note-block-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--wrong);
+  font-size: 13px;
+}
+
+#note-block-error:empty {
+  display: none;
+}
+
 /* コードモードでは度数系のルート設定を隠す */
 #app.is-chord .root-random-strings,
 #app.is-chord .root-fixed-pitch,
@@ -183,8 +224,31 @@ body {
 
 .controls {
   display: flex;
+  flex-direction: column;
+}
+
+.control-row {
+  display: flex;
   flex-wrap: wrap;
+  align-items: flex-end;
   gap: 12px;
+  padding: 12px 0;
+}
+
+.control-row + .control-row {
+  border-top: 1px solid rgba(148, 160, 180, 0.2);
+}
+
+.control-row:first-child {
+  padding-top: 0;
+}
+
+.control-row:last-child {
+  padding-bottom: 0;
+}
+
+.control-row:last-child .control.checkbox {
+  padding-bottom: 0;
 }
 
 .control {
@@ -355,6 +419,48 @@ button.ghost-btn {
 
 .hit:hover {
   fill: rgba(255, 255, 255, 0.14);
+}
+
+.hit.inside-block {
+  stroke: none;
+}
+
+.block-outline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+.scale-position-layer {
+  pointer-events: none;
+}
+
+.scale-position {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.scale-anchor {
+  fill: #4b9aff;
+  stroke: #ffffff;
+  stroke-width: 1;
+}
+
+.scale-anchor-label {
+  fill: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hit.inside-block:hover {
+  fill: rgba(255, 180, 84, 0.25);
+}
+
+.hit.outside-block {
+  fill: rgba(18, 21, 28, 0.7);
+  cursor: not-allowed;
 }
 
 .fretboard-wrap.locked .hit {

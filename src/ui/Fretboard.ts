@@ -9,6 +9,7 @@ import {
 } from "../core/fretboard";
 import { noteName, type AccidentalStyle, type NotationMode } from "../core/notes";
 import type { Tuning } from "../core/tuning";
+import { isInNoteBlock, isScaleNoteBlock, scaleBlockOutline, type NoteRegion } from "../core/noteBlock";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -73,6 +74,7 @@ export class Fretboard {
   private markers: Marker[] = [];
   private showAllNames = false;
   private interactive = true;
+  private block: NoteRegion | null = null;
   /** 練習モードのラベル生成を差し替える (度数モード用) */
   private ghostLabel: ((pos: Position) => string | null) | null = null;
 
@@ -270,6 +272,63 @@ export class Fretboard {
     this.element.classList.toggle("locked", !interactive);
   }
 
+  setNoteBlock(block: NoteRegion | null): void {
+    this.block = block;
+    this.svg.querySelector(".block-outline")?.remove();
+    this.svg.querySelector(".scale-position-layer")?.remove();
+    if (block && isScaleNoteBlock(block)) {
+      const x = (edge: number) => edge === 0 ? PAD_LEFT : BOARD_X + (edge - 1) * FRET_WIDTH;
+      const y = (edge: number) => PAD_TOP - STRING_GAP / 2 + edge * STRING_GAP;
+      this.svg.appendChild(el("path", {
+        d: scaleBlockOutline(block).map(([x1, y1, x2, y2]) => `M${x(x1)} ${y(y1)}L${x(x2)} ${y(y2)}`).join(" "),
+        class: "block-outline",
+        "aria-hidden": "true",
+      }));
+      const layer = el("g", { class: "scale-position-layer", "aria-hidden": "true" });
+      for (const pos of block.positions) {
+        const root = samePosition(pos, block.root);
+        layer.appendChild(el("circle", {
+          cx: fretCenterX(pos.fret),
+          cy: stringY(pos.string),
+          r: root ? 11 : 4,
+          class: root ? "scale-anchor" : "scale-position",
+          "data-string": pos.string,
+          "data-fret": pos.fret,
+        }));
+      }
+      const rootLabel = el("text", {
+        x: fretCenterX(block.root.fret),
+        y: stringY(block.root.string) + 4,
+        class: "scale-anchor-label",
+        "text-anchor": "middle",
+      });
+      rootLabel.textContent = "R";
+      layer.appendChild(rootLabel);
+      this.svg.insertBefore(layer, this.markerLayer);
+    } else if (block) {
+      const left = fretCenterX(block.minFret)
+        - (block.minFret === 0 ? OPEN_WIDTH : FRET_WIDTH) / 2;
+      const right = fretCenterX(block.maxFret)
+        + (block.maxFret === 0 ? OPEN_WIDTH : FRET_WIDTH) / 2;
+      this.svg.appendChild(el("rect", {
+        x: left,
+        y: stringY(block.firstString) - STRING_GAP / 2,
+        width: right - left,
+        height: (block.lastString - block.firstString + 1) * STRING_GAP,
+        class: "block-outline",
+        "aria-hidden": "true",
+      }));
+    }
+    this.svg.querySelectorAll<SVGRectElement>(".hit").forEach((cell) => {
+      const pos = { string: Number(cell.dataset.string), fret: Number(cell.dataset.fret) };
+      const active = block === null || isInNoteBlock(pos, block);
+      cell.classList.toggle("outside-block", !active);
+      cell.classList.toggle("inside-block", block !== null && active);
+      cell.setAttribute("aria-disabled", String(!active));
+    });
+    this.render();
+  }
+
   setMarkers(markers: Marker[]): void {
     this.markers = markers;
     this.render();
@@ -287,6 +346,8 @@ export class Fretboard {
       for (let s = 1; s <= STRING_COUNT; s++) {
         for (let f = 0; f <= MAX_FRET; f++) {
           const pos = { string: s, fret: f };
+          if (this.block && !isInNoteBlock(pos, this.block)) continue;
+          if (this.block && isScaleNoteBlock(this.block) && samePosition(pos, this.block.root)) continue;
           if (this.markers.some((m) => samePosition(m.pos, pos))) continue;
           const text = this.ghostLabel
             ? this.ghostLabel(pos)

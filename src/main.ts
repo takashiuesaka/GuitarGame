@@ -13,7 +13,13 @@ import {
   VOICINGS,
   type VoicingType,
 } from "./core/chords";
-import { midiAt, type Position } from "./core/fretboard";
+import { MAX_FRET, STRING_COUNT, midiAt, samePosition, type Position } from "./core/fretboard";
+import { DEFAULT_NOTE_BLOCK, noteBlockError, noteRegionError, type NoteBlock, type NoteRegion } from "./core/noteBlock";
+import {
+  DEFAULT_SCALE_SELECTION, SCALE_CATALOG_SOURCES, SCALE_DIRECTION_LABELS, SCALE_TYPE_LABELS,
+  catalogScaleBlocks, chooseScaleBlock, isScaleSelection, matchesScaleSelection,
+  type ScaleSelection, type ScaleType,
+} from "./core/scaleCatalog";
 import { noteName, type AccidentalStyle, type NotationMode } from "./core/notes";
 import { getTuning, TUNINGS, type Tuning } from "./core/tuning";
 import { catalogQualities } from "./core/catalogShapes";
@@ -34,6 +40,10 @@ interface Settings {
   accidental: AccidentalStyle;
   tuningId: string;
   range: QuestionRange;
+  noteScope: "whole" | "block";
+  noteBlock: NoteBlock;
+  noteBlockSource: "custom" | "scale";
+  noteScale: ScaleSelection;
   degreeGroup: DegreeGroup;
   degreeStyle: DegreeStyle;
   answerScope: AnswerScope;
@@ -61,6 +71,10 @@ function loadSettings(): Settings {
     accidental: "sharp",
     tuningId: "standard",
     range: "natural",
+    noteScope: "whole",
+    noteBlock: { ...DEFAULT_NOTE_BLOCK },
+    noteBlockSource: "custom",
+    noteScale: { ...DEFAULT_SCALE_SELECTION },
     degreeGroup: "chord-tone",
     degreeStyle: "roman",
     answerScope: "near-root",
@@ -99,6 +113,40 @@ function saveSettings(s: Settings): void {
 
 const settings = loadSettings();
 let tuning: Tuning = getTuning(settings.tuningId);
+let noteSettingsNotice = "";
+if (settings.noteScope !== "whole" && settings.noteScope !== "block") {
+  settings.noteScope = "whole";
+  noteSettingsNotice = "保存された回答範囲が無効なため、指板全体に戻しました。";
+}
+const savedBlockError = noteBlockError(tuning, settings.noteBlock);
+if (savedBlockError) {
+  settings.noteBlock = { ...DEFAULT_NOTE_BLOCK };
+  noteSettingsNotice = `${savedBlockError} 保存されたブロックを1〜3弦・0〜4フレットに戻しました。`;
+}
+if (settings.noteBlockSource !== "custom" && settings.noteBlockSource !== "scale") {
+  settings.noteBlockSource = "custom";
+  noteSettingsNotice = "保存されたブロック方式が無効なため、カスタムに戻しました。";
+}
+if (!isScaleSelection(settings.noteScale)) {
+  settings.noteScale = { ...DEFAULT_SCALE_SELECTION };
+  noteSettingsNotice = "保存されたスケール条件が無効なため、既定の条件に戻しました。";
+}
+let scaleBlocks = catalogScaleBlocks(tuning, settings.noteScale.scaleType, settings.noteScale.tonic);
+let selectedScaleBlock = scaleBlocks.find((block) => matchesScaleSelection(block, settings.noteScale))
+  ?? chooseScaleBlock(scaleBlocks, settings.noteScale);
+if (!matchesScaleSelection(selectedScaleBlock, settings.noteScale)) {
+  settings.noteScale = { ...selectedScaleBlock.selection };
+  noteSettingsNotice = "保存された運指は現在の条件で使えないため、成立するカタログ運指に更新しました。";
+}
+if (noteSettingsNotice) {
+  console.warn(noteSettingsNotice);
+  saveSettings(settings);
+}
+
+function activeNoteRegion(): NoteRegion | null {
+  if (settings.noteScope !== "block") return null;
+  return settings.noteBlockSource === "scale" ? selectedScaleBlock : settings.noteBlock;
+}
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
@@ -112,137 +160,178 @@ app.innerHTML = `
     </div>
 
     <div class="controls">
-      <label class="control mode-note">
-        <span>音名表記</span>
-        <select id="notation">
-          <option value="en">C D E F G A B</option>
-          <option value="ja">ド レ ミ ファ ソ ラ シ</option>
-        </select>
-      </label>
-      <label class="control mode-note">
-        <span>出題範囲</span>
-        <select id="range">
-          <option value="natural">ナチュラル音のみ (7音)</option>
-          <option value="all">♯/♭を含む全12音</option>
-        </select>
-      </label>
-      <label class="control mode-note">
-        <span>♯/♭の表記</span>
-        <select id="accidental">
-          <option value="sharp">シャープ (C♯)</option>
-          <option value="flat">フラット (D♭)</option>
-          <option value="both">両方 (C♯/D♭)</option>
-        </select>
-      </label>
+      <div class="control-row" role="group" aria-label="出題条件">
+        <label class="control mode-note">
+          <span>音名表記</span>
+          <select id="notation">
+            <option value="en">C D E F G A B</option>
+            <option value="ja">ド レ ミ ファ ソ ラ シ</option>
+          </select>
+        </label>
+        <label class="control mode-note">
+          <span>出題範囲</span>
+          <select id="range">
+            <option value="natural">ナチュラル音のみ (7音)</option>
+            <option value="all">♯/♭を含む全12音</option>
+          </select>
+        </label>
+        <label class="control mode-note">
+          <span>♯/♭の表記</span>
+          <select id="accidental">
+            <option value="sharp">シャープ (C♯)</option>
+            <option value="flat">フラット (D♭)</option>
+            <option value="both">両方 (C♯/D♭)</option>
+          </select>
+        </label>
 
-      <label class="control mode-degree">
-        <span>出題する度数</span>
-        <select id="degree-group"></select>
-      </label>
-      <label class="control mode-degree">
-        <span>度数の表記</span>
-        <select id="degree-style">
-          <option value="roman">ローマ数字 (♭III)</option>
-          <option value="quality">音程名 (m3)</option>
-        </select>
-      </label>
-      <label class="control mode-degree">
-        <span>回答できる範囲</span>
-        <select id="answer-scope">
-          <option value="near-root">ルート周辺 (±4フレット)</option>
-          <option value="whole">指板全体</option>
-        </select>
-      </label>
+        <label class="control mode-degree">
+          <span>出題する度数</span>
+          <select id="degree-group"></select>
+        </label>
+        <label class="control mode-degree">
+          <span>度数の表記</span>
+          <select id="degree-style">
+            <option value="roman">ローマ数字 (♭III)</option>
+            <option value="quality">音程名 (m3)</option>
+          </select>
+        </label>
+        <label class="control mode-degree">
+          <span>回答できる範囲</span>
+          <select id="answer-scope">
+            <option value="near-root">ルート周辺 (±4フレット)</option>
+            <option value="whole">指板全体</option>
+          </select>
+        </label>
 
-      <label class="control mode-degree">
-        <span>ルートの決め方</span>
-        <select id="root-mode">
-          <option value="random">毎問ランダム</option>
-          <option value="fixed-pitch">ルート音を固定（位置は変わる）</option>
-          <option value="fixed-position">ルート位置を固定</option>
-        </select>
-      </label>
-      <label class="control mode-degree root-fixed-pitch">
-        <span>ルート音</span>
-        <select id="root-pitch"></select>
-      </label>
-      <label class="control mode-degree root-fixed-position">
-        <span>ルートの弦</span>
-        <select id="root-pos-string">
-          <option value="1">1弦</option>
-          <option value="2">2弦</option>
-          <option value="3">3弦</option>
-          <option value="4">4弦</option>
-          <option value="5">5弦</option>
-          <option value="6">6弦</option>
-        </select>
-      </label>
-      <label class="control mode-degree root-fixed-position">
-        <span>ルートのフレット</span>
-        <select id="root-pos-fret"></select>
-      </label>
+        <label class="control mode-degree">
+          <span>ルートの決め方</span>
+          <select id="root-mode">
+            <option value="random">毎問ランダム</option>
+            <option value="fixed-pitch">ルート音を固定（位置は変わる）</option>
+            <option value="fixed-position">ルート位置を固定</option>
+          </select>
+        </label>
+        <label class="control mode-degree root-fixed-pitch">
+          <span>ルート音</span>
+          <select id="root-pitch"></select>
+        </label>
+        <label class="control mode-degree root-fixed-position">
+          <span>ルートの弦</span>
+          <select id="root-pos-string">
+            <option value="1">1弦</option>
+            <option value="2">2弦</option>
+            <option value="3">3弦</option>
+            <option value="4">4弦</option>
+            <option value="5">5弦</option>
+            <option value="6">6弦</option>
+          </select>
+        </label>
+        <label class="control mode-degree root-fixed-position">
+          <span>ルートのフレット</span>
+          <select id="root-pos-fret"></select>
+        </label>
 
-      <div class="control mode-degree root-random-strings">
-        <span>ルートの弦</span>
-        <div class="string-picker" id="root-strings">
-          <label><input type="checkbox" value="1" /><span>1弦</span></label>
-          <label><input type="checkbox" value="2" /><span>2弦</span></label>
-          <label><input type="checkbox" value="3" /><span>3弦</span></label>
-          <label><input type="checkbox" value="4" /><span>4弦</span></label>
-          <label><input type="checkbox" value="5" /><span>5弦</span></label>
-          <label><input type="checkbox" value="6" /><span>6弦</span></label>
+        <div class="control mode-degree root-random-strings">
+          <span>ルートの弦</span>
+          <div class="string-picker" id="root-strings">
+            <label><input type="checkbox" value="1" /><span>1弦</span></label>
+            <label><input type="checkbox" value="2" /><span>2弦</span></label>
+            <label><input type="checkbox" value="3" /><span>3弦</span></label>
+            <label><input type="checkbox" value="4" /><span>4弦</span></label>
+            <label><input type="checkbox" value="5" /><span>5弦</span></label>
+            <label><input type="checkbox" value="6" /><span>6弦</span></label>
+          </div>
         </div>
+
+        <label class="control mode-chord">
+          <span>ボイシング</span>
+          <select id="chord-voicing"></select>
+        </label>
+        <div class="control mode-chord">
+          <span>出題するコード</span>
+          <div class="chip-picker" id="chord-qualities"></div>
+        </div>
+        <div class="control mode-chord">
+          <span>転回形</span>
+          <div class="chip-picker" id="chord-inversions"></div>
+        </div>
+        <label class="control checkbox mode-chord">
+          <input type="checkbox" id="chord-ask-all-inversions" />
+          <span>選んだ転回形を連続で出題する</span>
+        </label>
+        <div class="control mode-chord">
+          <span>ルート弦</span>
+          <div class="chip-picker" id="chord-root-strings"></div>
+        </div>
+        <label class="control checkbox mode-chord">
+          <input type="checkbox" id="chord-show-root" />
+          <span>ルートを表示する</span>
+        </label>
+
+        <label class="control">
+          <span>チューニング</span>
+          <select id="tuning"></select>
+        </label>
       </div>
 
-      <label class="control mode-chord">
-        <span>ボイシング</span>
-        <select id="chord-voicing"></select>
-      </label>
-      <div class="control mode-chord">
-        <span>出題するコード</span>
-        <div class="chip-picker" id="chord-qualities"></div>
+      <div class="control-row mode-note" role="group" aria-label="ブロック範囲">
+        <label class="control checkbox">
+          <input type="checkbox" id="note-block-enabled" />
+          <span>ブロック適用（OFFなら指板全体）</span>
+        </label>
+        <label class="control">
+          <span>ブロックの選び方</span>
+          <select id="note-block-source">
+            <option value="custom">カスタム（長方形）</option>
+            <option value="scale">スケール運指カタログ</option>
+          </select>
+        </label>
+        <div class="control note-block-controls note-custom-controls">
+          <span>ブロックの範囲（全12音が必要）</span>
+          <div class="block-picker">
+            <label>開始弦 <select id="note-first-string"></select></label>
+            <label>終了弦 <select id="note-last-string"></select></label>
+            <label>開始フレット <select id="note-min-fret"></select></label>
+            <label>終了フレット <select id="note-max-fret"></select></label>
+          </div>
+        </div>
+        <div class="block-picker note-scale-controls">
+          <label class="control"><span>スケール</span><select id="note-scale"></select></label>
+          <label class="control"><span>ルート弦</span><select id="note-scale-root-string"></select></label>
+          <label class="control"><span>ルート位置</span><select id="note-scale-root-fret"></select></label>
+          <label class="control"><span>ルートからの音域</span><select id="note-scale-direction"></select></label>
+          <label class="control"><span>運指パターン</span><select id="note-scale-pattern"></select></label>
+        </div>
+        <button id="apply-note-block" class="ghost-btn note-custom-controls">範囲を更新</button>
+        <p id="note-scale-info" class="note-scale-controls"></p>
+        <p id="note-block-error" role="status" aria-live="polite"></p>
       </div>
-      <div class="control mode-chord">
-        <span>転回形</span>
-        <div class="chip-picker" id="chord-inversions"></div>
-      </div>
-      <label class="control checkbox mode-chord">
-        <input type="checkbox" id="chord-ask-all-inversions" />
-        <span>選んだ転回形を連続で出題する</span>
-      </label>
-      <div class="control mode-chord">
-        <span>ルート弦</span>
-        <div class="chip-picker" id="chord-root-strings"></div>
-      </div>
-      <label class="control checkbox mode-chord">
-        <input type="checkbox" id="chord-show-root" />
-        <span>ルートを表示する</span>
-      </label>
 
-      <label class="control">
-        <span>チューニング</span>
-        <select id="tuning"></select>
-      </label>
-      <label class="control checkbox">
-        <input type="checkbox" id="sound" />
-        <span>クリックで音を鳴らす</span>
-      </label>
-      <label class="control">
-        <span>音色</span>
-        <select id="tone"></select>
-      </label>
-      <label class="control">
-        <span>音量</span>
-        <input type="range" id="volume" min="0" max="100" step="1" />
-      </label>
-      <label class="control checkbox">
-        <input type="checkbox" id="auto-next" />
-        <span>正解したら自動で次へ</span>
-      </label>
-      <label class="control checkbox">
-        <input type="checkbox" id="show-names" />
-        <span id="show-names-label">音名を表示（練習モード）</span>
-      </label>
+      <div class="control-row" role="group" aria-label="サウンド">
+        <label class="control checkbox">
+          <input type="checkbox" id="sound" />
+          <span>クリックで音を鳴らす</span>
+        </label>
+        <label class="control">
+          <span>音色</span>
+          <select id="tone"></select>
+        </label>
+        <label class="control">
+          <span>音量</span>
+          <input type="range" id="volume" min="0" max="100" step="1" />
+        </label>
+      </div>
+
+      <div class="control-row" role="group" aria-label="練習設定">
+        <label class="control checkbox">
+          <input type="checkbox" id="auto-next" />
+          <span>正解したら自動で次へ</span>
+        </label>
+        <label class="control checkbox">
+          <input type="checkbox" id="show-names" />
+          <span id="show-names-label">音名を表示（練習モード）</span>
+        </label>
+      </div>
     </div>
   </header>
 
@@ -279,6 +368,20 @@ const $ = <T extends Element>(sel: string): T => document.querySelector<T>(sel)!
 
 const notationSelect = $<HTMLSelectElement>("#notation");
 const rangeSelect = $<HTMLSelectElement>("#range");
+const noteBlockCheckbox = $<HTMLInputElement>("#note-block-enabled");
+const noteBlockSourceSelect = $<HTMLSelectElement>("#note-block-source");
+const noteScaleSelect = $<HTMLSelectElement>("#note-scale");
+const noteScaleRootStringSelect = $<HTMLSelectElement>("#note-scale-root-string");
+const noteScaleRootFretSelect = $<HTMLSelectElement>("#note-scale-root-fret");
+const noteScaleDirectionSelect = $<HTMLSelectElement>("#note-scale-direction");
+const noteScalePatternSelect = $<HTMLSelectElement>("#note-scale-pattern");
+const noteScaleInfo = $<HTMLParagraphElement>("#note-scale-info");
+const noteFirstStringSelect = $<HTMLSelectElement>("#note-first-string");
+const noteLastStringSelect = $<HTMLSelectElement>("#note-last-string");
+const noteMinFretSelect = $<HTMLSelectElement>("#note-min-fret");
+const noteMaxFretSelect = $<HTMLSelectElement>("#note-max-fret");
+const applyNoteBlockButton = $<HTMLButtonElement>("#apply-note-block");
+const noteBlockNotice = $<HTMLParagraphElement>("#note-block-error");
 const accidentalSelect = $<HTMLSelectElement>("#accidental");
 const degreeGroupSelect = $<HTMLSelectElement>("#degree-group");
 const degreeStyleSelect = $<HTMLSelectElement>("#degree-style");
@@ -330,6 +433,23 @@ for (let f = 0; f <= ROOT_MAX_FRET; f++) {
   rootPosFretSelect.appendChild(new Option(`${f}フレット`, String(f)));
 }
 
+for (let s = 1; s <= STRING_COUNT; s++) {
+  noteFirstStringSelect.appendChild(new Option(`${s}弦`, String(s)));
+  noteLastStringSelect.appendChild(new Option(`${s}弦`, String(s)));
+}
+for (let f = 0; f <= MAX_FRET; f++) {
+  noteMinFretSelect.appendChild(new Option(`${f}フレット`, String(f)));
+  noteMaxFretSelect.appendChild(new Option(`${f}フレット`, String(f)));
+}
+noteBlockCheckbox.checked = settings.noteScope === "block";
+applyNoteBlockButton.disabled = !noteBlockCheckbox.checked;
+noteFirstStringSelect.value = String(settings.noteBlock.firstString);
+noteLastStringSelect.value = String(settings.noteBlock.lastString);
+noteMinFretSelect.value = String(settings.noteBlock.minFret);
+noteMaxFretSelect.value = String(settings.noteBlock.maxFret);
+noteBlockNotice.textContent = noteSettingsNotice;
+refreshScaleControls();
+
 for (const v of VOICINGS) {
   chordVoicingSelect.appendChild(new Option(v.label, v.id));
 }
@@ -371,7 +491,7 @@ synth.setEnabled(settings.sound);
 synth.setVolume(settings.volume);
 synth.setPreset(getTonePreset(settings.toneId));
 
-const noteQuiz = new Quiz(tuning, settings.range);
+const noteQuiz = new Quiz(tuning, settings.range, activeNoteRegion());
 const degreeQuiz = new DegreeQuiz(tuning, settings.degreeGroup, settings.answerScope, {
   mode: settings.rootMode,
   pitchClass: settings.rootPitchClass,
@@ -426,6 +546,57 @@ function noteLabel(pc: number): string {
   return noteName(pc, settings.notation, settings.accidental);
 }
 
+function scaleLabel(selection: ScaleSelection): string {
+  return `${noteLabel(selection.tonic)} ${SCALE_TYPE_LABELS[selection.scaleType]}`;
+}
+
+function refreshScaleControls(): void {
+  noteBlockSourceSelect.value = settings.noteBlockSource;
+  app.classList.toggle("scale-block", settings.noteBlockSource === "scale");
+  const selected = settings.noteScale;
+  noteScaleSelect.replaceChildren();
+  for (const scaleType of ["major", "natural-minor"] as const) {
+    for (let tonic = 0; tonic < 12; tonic++) {
+      noteScaleSelect.appendChild(new Option(`${noteLabel(tonic)} ${SCALE_TYPE_LABELS[scaleType]}`, `${scaleType}:${tonic}`));
+    }
+  }
+  noteScaleSelect.value = `${selected.scaleType}:${selected.tonic}`;
+  noteScaleRootStringSelect.replaceChildren();
+  const strings = [...new Set(scaleBlocks.map((block) => block.root.string))].sort((a, b) => b - a);
+  for (const string of strings) noteScaleRootStringSelect.appendChild(new Option(`${string}弦`, String(string)));
+  noteScaleRootStringSelect.value = String(selected.rootString);
+  noteScaleRootFretSelect.replaceChildren();
+  const onString = scaleBlocks.filter((block) => block.root.string === selected.rootString);
+  const frets = [...new Set(onString.map((block) => block.root.fret))].sort((a, b) => a - b);
+  for (const fret of frets) noteScaleRootFretSelect.appendChild(new Option(`${fret}フレット`, String(fret)));
+  noteScaleRootFretSelect.value = String(selected.rootFret);
+  const atRoot = onString.filter((block) => block.root.fret === selected.rootFret);
+  noteScaleDirectionSelect.replaceChildren();
+  for (const direction of ["higher", "lower", "mixed"] as const) {
+    if (atRoot.some((block) => block.selection.direction === direction)) {
+      noteScaleDirectionSelect.appendChild(new Option(SCALE_DIRECTION_LABELS[direction], direction));
+    }
+  }
+  noteScaleDirectionSelect.value = selected.direction;
+  noteScalePatternSelect.replaceChildren();
+  for (const block of atRoot.filter((entry) => entry.selection.direction === selected.direction)) {
+    noteScalePatternSelect.appendChild(new Option(block.pattern.name, block.pattern.id));
+  }
+  noteScalePatternSelect.value = selected.patternId;
+  noteScaleInfo.replaceChildren();
+  noteScaleInfo.append("○が回答対象、Rが基準ルートです。高音・低音はフレットの左右ではなく実音高で区別します。音域は原典の運指から抽出。出典: ");
+  selectedScaleBlock.pattern.sourceIds.forEach((id, index) => {
+    const source = SCALE_CATALOG_SOURCES.find((entry) => entry.id === id)!;
+    if (index > 0) noteScaleInfo.append(" ／ ");
+    const link = document.createElement("a");
+    link.href = source.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = source.title;
+    noteScaleInfo.appendChild(link);
+  });
+}
+
 function degLabel(interval: number): string {
   return degreeLabel(interval, settings.degreeStyle);
 }
@@ -449,6 +620,7 @@ function refreshRootControls(): void {
 
 const isDegreeMode = (): boolean => settings.mode === "degree";
 const isChordMode = (): boolean => settings.mode === "chord";
+const isNoteBlockMode = (): boolean => settings.mode === "note" && settings.noteScope === "block";
 const isAnswered = (): boolean =>
   isChordMode()
     ? chordQuiz.isAnswered
@@ -765,6 +937,13 @@ function handleSelect(pos: Position): void {
     return;
   }
   if (isAnswered()) return;
+  if (isNoteBlockMode() && !noteQuiz.isInScope(pos)) {
+    feedback.textContent = settings.noteBlockSource === "scale"
+      ? "スケール運指の○またはRの位置から選んでください。外枠の中でも、○のない位置は回答対象外です。"
+      : "外枠で囲まれたブロック内から選んでください。";
+    feedback.className = "feedback";
+    return;
+  }
 
   const markers: Marker[] = [];
   let correct: boolean;
@@ -798,16 +977,33 @@ function handleSelect(pos: Position): void {
     }
   } else {
     const result = noteQuiz.judge(pos);
+    if (result.ignored) return;
     correct = result.correct;
     answers = result.answers;
 
+    if (isNoteBlockMode()) {
+      updateQuestion();
+      for (const selected of noteQuiz.state.selected) {
+        markers.push({ pos: selected, kind: "correct" });
+      }
+      if (!result.complete) {
+        fretboard.setMarkers(markers);
+        feedback.textContent = `見つけました！ あと${answers.length - noteQuiz.state.selected.length}か所。`;
+        feedback.className = "feedback";
+        return;
+      }
+    }
     if (correct) {
-      markers.push({ pos, kind: "correct" });
+      if (!isNoteBlockMode()) markers.push({ pos, kind: "correct" });
       feedback.textContent = "正解！ 🎉";
       feedback.className = "feedback correct";
     } else {
       markers.push({ pos, kind: "wrong" });
-      for (const a of answers) markers.push({ pos: a, kind: "answer" });
+      for (const a of answers) {
+        if (!markers.some((marker) => samePosition(marker.pos, a))) {
+          markers.push({ pos: a, kind: "answer" });
+        }
+      }
       feedback.textContent = `残念… そこは ${noteLabel(result.pickedPitchClass)} です。${noteLabel(
         noteQuiz.state.question,
       )} は緑の位置。`;
@@ -853,6 +1049,7 @@ function nextQuestion(): void {
 
 /** 現在の問題に応じた常設マーカー(ルート)とゴーストラベルを更新 */
 function refreshBoard(): void {
+  fretboard.setNoteBlock(isNoteBlockMode() ? activeNoteRegion() : null);
   if (isChordMode()) {
     renderChordSelection();
     fretboard.setGhostLabel(null);
@@ -864,7 +1061,7 @@ function refreshBoard(): void {
       return degLabel(degreeQuiz.intervalOf(pos));
     });
   } else {
-    fretboard.clearMarkers();
+    fretboard.setMarkers(noteQuiz.state.selected.map((pos) => ({ pos, kind: "correct" })));
     fretboard.setGhostLabel(null);
   }
   fretboard.setShowAllNames(settings.showAllNames);
@@ -891,9 +1088,17 @@ function updateQuestion(): void {
       s.root.string
     }弦 ${s.root.fret}フレット）`;
   } else {
-    questionLabel.textContent = "この音はどこ？";
+    questionLabel.textContent = isNoteBlockMode()
+      ? "ブロック内で、この音をすべて見つけて"
+      : "この音はどこ？";
     questionNote.textContent = noteLabel(noteQuiz.state.question);
-    questionSub.textContent = "";
+    const block = settings.noteBlock;
+    const regionLabel = settings.noteBlockSource === "scale"
+      ? `${scaleLabel(settings.noteScale)} ／ ${settings.noteScale.rootString}弦 ${settings.noteScale.rootFret}フレット起点 ／ ${SCALE_DIRECTION_LABELS[settings.noteScale.direction]} ／ ${selectedScaleBlock.pattern.name}`
+      : `${block.firstString}〜${block.lastString}弦 ／ ${block.minFret}〜${block.maxFret}フレット`;
+    questionSub.textContent = isNoteBlockMode()
+      ? `${regionLabel} ／ ${noteQuiz.state.selected.length}/${noteQuiz.answers().length}か所発見`
+      : "";
   }
 }
 
@@ -928,7 +1133,11 @@ function applyMode(): void {
     ? "指板をクリックして構成音をすべて選ぶと、正解シェイプと一致した瞬間に自動で判定します。展開形（ルートが最低音でない押さえ方）、弦を1本飛ばした押さえ方、構成音をオクターブで重ねたバレーコード形も正解です。ただし人間が押弦できないシェイプは不正解です。一致しないまま確定したいときは「回答する」を押してください。選んだルート弦の数だけ続けて出題されます。"
     : degree
       ? "青い R がルートです。指板をクリックして指定された度数の位置を答えてください。"
-      : "1弦が上・6弦が下、左が0フレット（開放弦）、右が24フレットです。回答後も指板をクリックすると音を確認できます。";
+      : isNoteBlockMode()
+        ? settings.noteBlockSource === "scale"
+          ? "選んだスケール運指の○とRだけが回答対象です。出題範囲（ナチュラル／全12音）とスケールの共通音から出題し、同名音の位置はすべて選びます。カスタム方式に戻すと以前の長方形を使えます。"
+          : "外枠内の同じ音名をすべて探してください。オクターブ違い・同じ高さの別ポジションもすべて必要です。違う音を選ぶと不正解になり、ブロック内の正解を表示します。"
+        : "1弦が上・6弦が下、左が0フレット（開放弦）、右が24フレットです。回答後も指板をクリックすると音を確認できます。";
 
   cancelTimers();
   feedback.textContent = "";
@@ -941,6 +1150,82 @@ function applyMode(): void {
 }
 
 /* ---------- イベント ---------- */
+
+function applyNoteScope(block: NoteBlock, scope: Settings["noteScope"]): void {
+  const region = settings.noteBlockSource === "scale" ? selectedScaleBlock : block;
+  const error = scope === "block" ? noteRegionError(tuning, region) : null;
+  if (error) {
+    noteBlockNotice.textContent = error;
+    noteBlockCheckbox.checked = settings.noteScope === "block";
+    return;
+  }
+  settings.noteScope = scope;
+  if (settings.noteBlockSource === "custom") settings.noteBlock = block;
+  noteBlockCheckbox.checked = scope === "block";
+  applyNoteBlockButton.disabled = !noteBlockCheckbox.checked;
+  noteQuiz.setBlock(activeNoteRegion());
+  noteBlockNotice.textContent = "";
+  saveSettings(settings);
+  noteQuiz.next();
+  refreshScaleControls();
+  applyMode();
+}
+
+function applyScaleSelection(preferred: ScaleSelection): void {
+  scaleBlocks = catalogScaleBlocks(tuning, preferred.scaleType, preferred.tonic);
+  selectedScaleBlock = chooseScaleBlock(scaleBlocks, preferred);
+  settings.noteScale = { ...selectedScaleBlock.selection };
+  applyNoteScope(settings.noteBlock, settings.noteScope);
+}
+
+function draftNoteBlock(): NoteBlock {
+  return {
+    firstString: Number(noteFirstStringSelect.value),
+    lastString: Number(noteLastStringSelect.value),
+    minFret: Number(noteMinFretSelect.value),
+    maxFret: Number(noteMaxFretSelect.value),
+  };
+}
+
+noteBlockCheckbox.addEventListener("change", () => {
+  const scope = noteBlockCheckbox.checked ? "block" : "whole";
+  applyNoteScope(scope === "block" ? draftNoteBlock() : settings.noteBlock, scope);
+});
+applyNoteBlockButton.addEventListener("click", () => {
+  applyNoteScope(draftNoteBlock(), "block");
+});
+
+noteBlockSourceSelect.addEventListener("change", () => {
+  const source = noteBlockSourceSelect.value === "scale" ? "scale" : "custom";
+  const region = source === "scale" ? selectedScaleBlock : settings.noteBlock;
+  const error = settings.noteScope === "block" ? noteRegionError(tuning, region) : null;
+  if (error) {
+    noteBlockNotice.textContent = error;
+    noteBlockSourceSelect.value = settings.noteBlockSource;
+    return;
+  }
+  settings.noteBlockSource = source;
+  applyNoteScope(settings.noteBlock, settings.noteScope);
+});
+noteScaleSelect.addEventListener("change", () => {
+  const [type, tonic] = noteScaleSelect.value.split(":");
+  const scaleType: ScaleType = type === "natural-minor" ? "natural-minor" : "major";
+  applyScaleSelection({ ...settings.noteScale, scaleType, tonic: Number(tonic) });
+});
+noteScaleRootStringSelect.addEventListener("change", () => {
+  applyScaleSelection({ ...settings.noteScale, rootString: Number(noteScaleRootStringSelect.value) });
+});
+noteScaleRootFretSelect.addEventListener("change", () => {
+  applyScaleSelection({ ...settings.noteScale, rootFret: Number(noteScaleRootFretSelect.value) });
+});
+noteScaleDirectionSelect.addEventListener("change", () => {
+  const value = noteScaleDirectionSelect.value;
+  const direction = value === "lower" ? "lower" : value === "mixed" ? "mixed" : "higher";
+  applyScaleSelection({ ...settings.noteScale, direction });
+});
+noteScalePatternSelect.addEventListener("change", () => {
+  applyScaleSelection({ ...settings.noteScale, patternId: noteScalePatternSelect.value });
+});
 
 chordVoicingSelect.addEventListener("change", () => {
   settings.chordVoicing = chordVoicingSelect.value as VoicingType;
@@ -982,6 +1267,7 @@ for (const tab of modeTabs) {
     const mode = tab.dataset.mode as GameMode;
     if (mode === settings.mode) return;
     settings.mode = mode;
+    if (isNoteBlockMode()) noteQuiz.next();
     saveSettings(settings);
     applyMode();
   });
@@ -992,6 +1278,7 @@ notationSelect.addEventListener("change", () => {
   saveSettings(settings);
   fretboard.setNotation(settings.notation);
   refreshRootPitchOptions();
+  refreshScaleControls();
   updateQuestion();
 });
 
@@ -1007,6 +1294,7 @@ accidentalSelect.addEventListener("change", () => {
   saveSettings(settings);
   fretboard.setAccidental(settings.accidental);
   refreshRootPitchOptions();
+  refreshScaleControls();
   updateQuestion();
 });
 
@@ -1075,10 +1363,37 @@ for (const input of rootStringInputs) {
 }
 
 tuningSelect.addEventListener("change", () => {
-  tuning = getTuning(tuningSelect.value);
+  const nextTuning = getTuning(tuningSelect.value);
+  const nextScaleBlocks = catalogScaleBlocks(nextTuning, settings.noteScale.scaleType, settings.noteScale.tonic);
+  const nextScaleBlock = chooseScaleBlock(nextScaleBlocks, settings.noteScale);
+  if (settings.noteScope === "block") {
+    const error = settings.noteBlockSource === "scale"
+      ? nextScaleBlock.root.string !== settings.noteScale.rootString
+        ? "このチューニングでは、選択したルート弦のカタログ運指が成立しません。別のルート弦を選ぶかブロック適用をOFFにしてください。"
+        : null
+      : noteBlockError(nextTuning, settings.noteBlock);
+    if (error) {
+      tuningSelect.value = tuning.id;
+      noteBlockNotice.textContent = error;
+      // 音名以外のモードでも、変更を受け付けなかった理由を表示する。
+      feedback.textContent = `音名クイズのブロックが使えません。${error}`;
+      feedback.className = "feedback wrong";
+      return;
+    }
+  }
+  noteBlockNotice.textContent = !matchesScaleSelection(nextScaleBlock, settings.noteScale)
+    ? "新しいチューニングで成立するルート位置・音域に更新しました。"
+    : "";
+  tuning = nextTuning;
   settings.tuningId = tuning.id;
+  scaleBlocks = nextScaleBlocks;
+  selectedScaleBlock = nextScaleBlock;
+  settings.noteScale = { ...nextScaleBlock.selection };
   saveSettings(settings);
+  noteQuiz.setBlock(null);
   noteQuiz.setTuning(tuning);
+  noteQuiz.setBlock(activeNoteRegion());
+  refreshScaleControls();
   degreeQuiz.setTuning(tuning);
   chordQuiz.setTuning(tuning);
   fretboard.setTuning(tuning);

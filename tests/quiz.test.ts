@@ -3,11 +3,186 @@ import { catalogQualities } from "../src/core/catalogShapes";
 import { CHORD_QUALITIES, isPlayableShape, type VoicingType } from "../src/core/chords";
 import { pitchClassAt, type Position } from "../src/core/fretboard";
 import { getTuning } from "../src/core/tuning";
+import { DEFAULT_NOTE_BLOCK, isInNoteBlock, type ScaleNoteBlock } from "../src/core/noteBlock";
 import { ChordQuiz } from "../src/ui/ChordQuiz";
 import { DegreeQuiz } from "../src/ui/DegreeQuiz";
 import { Quiz } from "../src/ui/Quiz";
 
 const tuning = getTuning("standard");
+
+describe("[S-NOTE-07] スケール運指だけで音名を答える", () => {
+  const block: ScaleNoteBlock = {
+    kind: "scale",
+    root: { string: 6, fret: 8 },
+    positions: [
+      { string: 6, fret: 8 }, { string: 6, fret: 10 },
+      { string: 5, fret: 7 }, { string: 5, fret: 8 }, { string: 5, fret: 10 },
+      { string: 4, fret: 7 }, { string: 4, fret: 9 }, { string: 4, fret: 10 },
+    ],
+  };
+
+  it("全12音設定でも実際のスケール構成音だけを出題する", () => {
+    const quiz = new Quiz(tuning, "all", block);
+    for (let i = 0; i < 100; i++) {
+      expect([0, 2, 4, 5, 7, 9, 11]).toContain(quiz.state.question);
+      expect(quiz.answers().length).toBeGreaterThan(0);
+      expect(quiz.answers().every((pos) => isInNoteBlock(pos, block))).toBe(true);
+      const previous = quiz.state.question;
+      quiz.next();
+      expect(quiz.state.question).not.toBe(previous);
+    }
+  });
+
+  it("同名音が外枠内でも運指の位置でなければ回答にならず、全位置が必要", () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    let quiz: Quiz;
+    try {
+      quiz = new Quiz(tuning, "all", block);
+    } finally {
+      random.mockRestore();
+    }
+    expect(quiz.state.question).toBe(0);
+    expect(quiz.judge({ string: 3, fret: 5 }).ignored).toBe(true);
+    expect(quiz.judge({ string: 6, fret: 8 }).complete).toBe(false);
+    expect(quiz.judge({ string: 4, fret: 10 }).complete).toBe(true);
+    expect(quiz.state).toMatchObject({ asked: 1, correct: 1 });
+  });
+
+  it("ナチュラル設定では移調したスケールと7音設定の共通部分を出題する", () => {
+    const shifted: ScaleNoteBlock = {
+      kind: "scale",
+      root: { string: 6, fret: 9 },
+      positions: block.positions.map((pos) => ({ ...pos, fret: pos.fret + 1 })),
+    };
+    const quiz = new Quiz(tuning, "natural", shifted);
+    const questions = new Set<number>();
+    for (let i = 0; i < 20; i++) {
+      questions.add(quiz.state.question);
+      expect(quiz.answers().length).toBeGreaterThan(0);
+      quiz.next();
+    }
+    expect([...questions].sort((a, b) => a - b)).toEqual([0, 5]);
+  });
+
+  it("カスタム範囲・指板全体へ戻すとスケールの出題制限を解除する", () => {
+    const quiz = new Quiz(tuning, "all", block);
+    quiz.setBlock(DEFAULT_NOTE_BLOCK);
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.99);
+    try {
+      quiz.next();
+      quiz.next();
+      expect([10, 11]).toContain(quiz.state.question);
+      quiz.setBlock(null);
+      expect(quiz.answers().some((pos) => pos.fret > 12)).toBe(true);
+    } finally {
+      random.mockRestore();
+    }
+  });
+});
+
+describe("[S-NOTE-04][S-NOTE-05] ブロック音名クイズ", () => {
+  function eQuiz(): Quiz {
+    const random = vi.spyOn(Math, "random").mockReturnValue(4 / 12);
+    try {
+      return new Quiz(tuning, "all", { firstString: 1, lastString: 4, minFret: 0, maxFret: 5 });
+    } finally {
+      random.mockRestore();
+    }
+  }
+
+  it("オクターブ違いと同じ高さの別ポジションをすべて選んで初めて正解になる", () => {
+    const quiz = eQuiz();
+    expect(quiz.state.question).toBe(4);
+    expect(quiz.answers()).toEqual([
+      { string: 1, fret: 0 }, { string: 2, fret: 5 }, { string: 4, fret: 2 },
+    ]);
+    for (const pos of quiz.answers().slice(0, -1)) {
+      expect(quiz.judge(pos)).toMatchObject({ correct: true, complete: false });
+      expect(quiz.isAnswered).toBe(false);
+      expect(quiz.state).toMatchObject({ asked: 0, correct: 0, combo: 0 });
+    }
+    expect(quiz.judge({ string: 4, fret: 2 })).toMatchObject({ correct: true, complete: true });
+    expect(quiz.state).toMatchObject({ asked: 1, correct: 1, combo: 1, bestCombo: 1 });
+    quiz.judge({ string: 1, fret: 0 });
+    expect(quiz.state.asked).toBe(1);
+  });
+
+  it("同じ位置の再クリックやブロック外では進捗・スコアを変えない", () => {
+    const quiz = eQuiz();
+    quiz.judge({ string: 1, fret: 0 });
+    expect(quiz.judge({ string: 1, fret: 0 }).ignored).toBe(true);
+    expect(quiz.judge({ string: 6, fret: 0 }).ignored).toBe(true);
+    expect(quiz.judge({ string: 1, fret: 12 }).ignored).toBe(true);
+    expect(quiz.state.selected).toEqual([{ string: 1, fret: 0 }]);
+    expect(quiz.state.asked).toBe(0);
+    expect(quiz.isAnswered).toBe(false);
+  });
+
+  it("途中で違う音を選ぶと1問だけ不正解として確定し、正解はブロック内だけ返す", () => {
+    const quiz = eQuiz();
+    quiz.answers().forEach((pos) => quiz.judge(pos));
+    quiz.next();
+    const answer = quiz.answers()[0];
+    if (quiz.answers().length > 1) quiz.judge(answer);
+    const wrong = { string: 1, fret: quiz.state.question === 4 ? 1 : 0 };
+    const result = quiz.judge(wrong);
+    expect(result).toMatchObject({ correct: false, complete: true });
+    expect(quiz.state).toMatchObject({ asked: 2, correct: 1, combo: 0, bestCombo: 1 });
+    expect(result.answers.every((pos) => isInNoteBlock(pos, {
+      firstString: 1, lastString: 4, minFret: 0, maxFret: 5,
+    }))).toBe(true);
+    quiz.judge(result.answers[0]);
+    expect(quiz.state.asked).toBe(2);
+  });
+
+  it("次の問題・リセット・ブロック変更・チューニング変更で選択を消す", () => {
+    const quiz = eQuiz();
+    quiz.judge(quiz.answers()[0]);
+    const previous = quiz.state.question;
+    quiz.next();
+    expect(quiz.state.question).not.toBe(previous);
+    expect(quiz.state.selected).toEqual([]);
+    quiz.judge(quiz.answers()[0]);
+    quiz.reset();
+    expect(quiz.state).toMatchObject({ selected: [], asked: 0, correct: 0 });
+    quiz.judge(quiz.answers()[0]);
+    quiz.setBlock(DEFAULT_NOTE_BLOCK);
+    expect(quiz.state.selected).toEqual([]);
+    quiz.judge(quiz.answers()[0]);
+    quiz.setTuning(getTuning("half-down"));
+    expect(quiz.state.selected).toEqual([]);
+    expect(quiz.isAnswered).toBe(false);
+  });
+
+  it("全12音・ナチュラルのどちらもブロック内に正解があり、連続で同じ音を出さない", () => {
+    for (const range of ["all", "natural"] as const) {
+      const quiz = new Quiz(tuning, range, DEFAULT_NOTE_BLOCK);
+      for (let i = 0; i < 100; i++) {
+        const previous = quiz.state.question;
+        expect(quiz.answers().length).toBeGreaterThan(0);
+        expect(quiz.answers().every((pos) => isInNoteBlock(pos, DEFAULT_NOTE_BLOCK))).toBe(true);
+        if (range === "natural") expect([0, 2, 4, 5, 7, 9, 11]).toContain(previous);
+        quiz.next();
+        expect(quiz.state.question).not.toBe(previous);
+      }
+    }
+  });
+
+  it("不正なブロックは例外で拒否し、直前の範囲と進捗を保持する", () => {
+    const quiz = eQuiz();
+    quiz.judge(quiz.answers()[0]);
+    const before = quiz.state;
+    expect(() => quiz.setBlock({ ...DEFAULT_NOTE_BLOCK, maxFret: 0 })).toThrow("全12音");
+    expect(quiz.state).toEqual(before);
+  });
+
+  it("指板全体へ戻すと、従来通り1か所で正解になる", () => {
+    const quiz = eQuiz();
+    quiz.setBlock(null);
+    expect(quiz.judge({ string: 6, fret: 0 })).toMatchObject({ correct: true, complete: true });
+    expect(quiz.isAnswered).toBe(true);
+  });
+});
 
 describe("[S-NOTE-01] 音名クイズの出題", () => {
   it("同じ音名が2問続けて出題されない", () => {
